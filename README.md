@@ -34,9 +34,10 @@ My encoding notebook - writing things down for reference.
 colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-strength=1.0:ctu=32:max-tu-size=16:deblock=-2,-2:merange=44:qcomp=0.8:qg-size=16:no-sao</code>
     - <code>colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited</code> SDR
     - <code>aq-mode=1</code> requires more bitrate, but gives a better result overall
-    - <code>ctu=32:max-tu-size=16</code> [Suggested](https://forum.doom9.org/showthread.php?t=172458) C.T.U. values for 1080p
+    - <code>ctu=32:max-tu-size=16</code> Suggested [here](https://forum.doom9.org/showthread.php?t=172458) and [here](https://forum.doom9.org/showthread.php?p=1735137#post1735137) - C.T.U. values for 1080p
     - <code>qcomp=0.8</code> seems to be necessary if CRF<=23 if we want to compete with AVC quality
     - <code>no-sao</code>, as it would blur the image a lot - it may work wonders with grainy movies though.
+    - <code>merange=44</code> as suggested [here](https://forum.doom9.org/showthread.php?p=1735137#post1735137).
 
 ## Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
 
