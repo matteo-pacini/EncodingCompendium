@@ -26,6 +26,12 @@
 - Advanced Parameters:  <code>
 colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-strength=1.0:ctu=32:max-tu-size=16:deblock=-2,-2:merange=44:qcomp=0.8:qg-size=16:no-sao</code>
 
-## Advanced Parameters
+# Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
 
-TBW
+- Video Codec: H265-10Bit (CPU, plz no hardware)
+- FPS: Same as source
+- Constant Quality: **EXPERIMENTING**
+- Preset: **EXPERIMENTING**
+- Profile: Main10
+- Level: 5.1
+- Advanced Parameters: <code>aq-mode=1:aq-strength=1.0:deblock=-2,-2:qcomp=0.8:no-sao:transfer=smpte2084:colorprim=bt2020:colormatrix=bt2020nc:chromaloc=2:hdr:hdr-opt:max-cll=724,647:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)</code>
