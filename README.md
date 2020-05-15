@@ -58,3 +58,5 @@ colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-stre
 SSIM:
 
 <code>ffmpeg -i main.mkv -i reference.mkv -lavfi ssim -f null -</code>
+
+Luminance difference (**Y**) seems to be the most noticeable.
