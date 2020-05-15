@@ -24,11 +24,8 @@
 - Profile: Main10
 - Level: 4.0
 - Advanced Parameters:  <code>
-colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-strength=1.0:ctu=32:max-tu-size=16:deblock=-2,-2:merange=44:qcomp=0.8:qg-size=16:no-sao
-</code>
+colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-strength=1.0:ctu=32:max-tu-size=16:deblock=-2,-2:merange=44:qcomp=0.8:qg-size=16:no-sao</code>
 
 ## Advanced Parameters
 
 TBW
-
-
