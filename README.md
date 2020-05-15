@@ -55,7 +55,7 @@ colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-stre
 
 # Compare two inputs with identical number of frames
 
-SSIM:
+[SSIM](https://ece.uwaterloo.ca/~z70wang/research/ssim/):
 
 <code>ffmpeg -i main.mkv -i reference.mkv -lavfi ssim -f null -</code>
 
