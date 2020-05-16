@@ -61,3 +61,11 @@ colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-stre
 <code>ffmpeg -i main.mkv -i reference.mkv -lavfi ssim -f null -</code>
 
 Luminance difference (**Y**) seems to be the most noticeable.
+
+## Interpret SSIM and PSNR
+
+https://forum.doom9.org/showthread.php?p=1334145#post1334145
+
+> ssim: ((1-oldssim)/(1-newssim) - 1)*100 = % improvement
+>
+> psnr: (new - old) / 0.05 = % improvement 
