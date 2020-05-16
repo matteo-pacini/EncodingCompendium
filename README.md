@@ -4,7 +4,7 @@ My encoding notebook - writing things down for reference.
 
 # Software Requirements
 
-- Handbrake
+- ffmpeg
 - MediaInfo
 
 # Video Encoding
@@ -22,22 +22,44 @@ My encoding notebook - writing things down for reference.
 
 ## Encoding 1080p Remux to 1080 HEVC
 
-- Video Codec: H265-10Bit (CPU)
-  - 10bit seems to compress better and doesn't introduce color banding with SDR sources (like 8-bit HEVC does).
-- FPS: Same as source
-- Constant Quality: RF 18
-- Preset: Medium
-- Profile: Main10
-- Level: 4.0
-- Tune: none
-- Advanced Parameters:  <code>
-colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:aq-mode=1:aq-strength=1.0:ctu=32:max-tu-size=16:deblock=-2,-2:merange=44:qcomp=0.8:qg-size=16:no-sao</code>
-    - <code>colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited</code> SDR
-    - <code>aq-mode=1</code> requires more bitrate, but gives a better result overall
-    - <code>ctu=32:max-tu-size=16</code> Suggested [here](https://forum.doom9.org/showthread.php?t=172458) and [here](https://forum.doom9.org/showthread.php?p=1735137#post1735137) - C.T.U. values for 1080p
-    - <code>qcomp=0.8</code> seems to be necessary if CRF<=23 if we want to compete with AVC quality
-    - <code>no-sao</code>, as it would blur the image a lot - it may work wonders with grainy movies though.
-    - <code>merange=44</code> as suggested [here](https://forum.doom9.org/showthread.php?p=1735137#post1735137).
+This script:
+
+- Encodes the video track to HEVC 10-bit (SDR).
+- Auto-crops the video.
+- Copies the chapters metadata.
+- Creates three audio tracks from the primary one (assuming it's high quality - 7.1 - 24bit - 48kHz)
+    - Stereo track @ 192kbps
+    - 5.1 track @ 384kbps
+    - 7.1 track @ 512kbps
+- Copies the first subtitle track over.
+
+:computer:
+ 
+    PRESET="medium"
+    CRF="18"
+    COLOR="colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited"
+    AQ="aq-mode=2"
+    CTU="ctu=32:max-tu-size=16"
+    DEBLOCK="deblock=-2,-2"
+    QCOMP="qcomp=0.8"
+    SAO="no-sao=1:no-strong-intra-smoothing=1"
+    PROFILE="main10"
+    LEVEL="level-idc=41"
+    EXTRA="merange=44:qg-size=16:rc-lookahead=48:keyint=240:min-keyint=24"
+
+    CROP=$(ffmpeg -i "$1" -t 600 -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1)
+
+    ffmpeg -i "$1" \
+        -map 0:0 -map 0:1 -map 0:1 -map 0:1 -map 0:2 -map_chapters 0                                                    \
+        -vf $CROP                                                                                                       \
+        -c:v libx265 -preset $PRESET -profile:v $PROFILE -crf $CRF -pix_fmt yuv420p10le                                 \
+        -x265-params "$COLOR:$AQ:$CTU:$DEBLOCK:$SAO:$QCOMP:$LEVEL:$EXTRA"                                               \
+        -c:a:0 libopus -ac:a:0 2 -b:a:0 192K -metadata:s:1 title="English / Opus / Stereo / 24 bit / 48kHz / 192kbps"   \
+        -c:a:1 libopus -ac:a:1 6 -b:a:1 384K -metadata:s:2 title="English / Opus / 5.1 / 24 bit / 48kHz / 384kbps"      \
+        -c:a:2 libopus -b:a:2 512K -metadata:s:3 title="English / Opus / 7.1 / 24 bit / 48kHz / 512kbps"                \
+        -c:s:0 copy                                                                                                     \
+        output.mkv
+
 
 ## Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
 
