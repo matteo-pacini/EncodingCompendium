@@ -9,7 +9,9 @@ My encoding notebook - writing things down for reference.
 
 # Video Encoding
 
-## Encoding 1080p Remux to 1080p AVC (reference quality)
+## AVC
+
+### Encoding 1080p Remux to 1080p AVC (reference quality)
 
 - Video Codec: H264 (CPU)
 - FPS: Same as source
@@ -20,7 +22,24 @@ My encoding notebook - writing things down for reference.
 - Tune: film
 - Advanced Parameters: <code>deblock=-2,-2</code>
 
-## Encoding 1080p Remux to 1080 HEVC
+## HEVC 10-bit
+
+### Preset choice and rationale behind parameters
+
+8-bit format is not being used at all, as it introduces a noticeable color banding on SDR sources.
+
+On a Ryzen 3700X (8c/16t) the most viable preset is <code>medium</code>. It encodes with a speed of <code>1.0x</code>.
+
+Slower presets / higher CRF are not worth pursuing, as the encoding time inflates too much, and the quality improvement is debatable.
+
+<code>aq-mode=2</code> seems to yield the best result (both visually and according to SSIM).</br>
+<code>aq-mode=1:aq-strength:1</code> is decent too, and it consumes less bitrate than <code>aq-mode=2</code>.
+
+<code>qcomp=0.8</code> influences CRF - this value seems to be the community standard for when trying to replicate AVC quality on HEVC and CRF is <= 23.
+
+<code>no-sao=1:no-strong-intra-smoothing=1</code> are a MUST to preserve quality and avoid blurriness.
+
+### Encoding 1080p Remux to 1080 HEVC
 
 This script:
 
@@ -61,7 +80,7 @@ This script:
         output.mkv
 
 
-## Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
+### Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
 
 - Video Codec: H265-10Bit (CPU)
 - FPS: Same as source
