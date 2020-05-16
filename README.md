@@ -91,3 +91,14 @@ https://forum.doom9.org/showthread.php?p=1334145#post1334145
 > ssim: ((1-oldssim)/(1-newssim) - 1)*100 = % improvement
 >
 > psnr: (new - old) / 0.05 = % improvement 
+
+# Known bugs
+
+## Too many packets buffered for output stream 0:1
+
+https://trac.ffmpeg.org/ticket/6375
+
+Solution:
+<code>-max_muxing_queue_size 1024</code>
+
+Some users report that usign 9999 also worked.
