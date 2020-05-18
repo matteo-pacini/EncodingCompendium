@@ -66,7 +66,7 @@ This script:
     LEVEL="level-idc=41"
     EXTRA="merange=44:qg-size=16:rc-lookahead=48:keyint=240:min-keyint=24"
 
-    CROP=$(ffmpeg -i "$1" -t 600 -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1)
+    CROP=$(ffmpeg -ss 600 -i "$1" -vf cropdetect -f null - 2>&1 | awk '/crop/ { print $NF }' | tail -1)
 
     ffmpeg -i "$1" \
         -map 0:0 -map 0:1 -map 0:1 -map 0:1 -map 0:2 -map_chapters 0                                                    \
