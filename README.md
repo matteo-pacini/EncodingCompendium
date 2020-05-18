@@ -80,11 +80,11 @@ This script:
         output.mkv
 ### Encoding 2160p HDR10 Remux to 1080p HEVC-10but
 
-Same as above, but we apply a <conde>lanczos</code> scale video filter.
+Same as above, but we apply a <b>lanczos</b> scale video filter.
 
 <code>-vf=scale=1920:800 -sws_flags lanczos</code>
 
-See also HDR flags in the section below. HDR -> SDR tonemapping is totally not worthy.
+See also HDR flags in the section below. HDR -> SDR tonemapping is totally not worth it.
 
 ### Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
 
@@ -126,4 +126,11 @@ https://trac.ffmpeg.org/ticket/6375
 Solution:
 <code>-max_muxing_queue_size 1024</code>
 
-Some users report that usign 9999 also worked.
+Some users report that using <code>9999</code> also worked.
+
+## libopus - Invalid channel layout 5.1(side) for specified mapping family -1
+
+https://trac.ffmpeg.org/ticket/5718
+
+FFmpeg is not remapping channels for <code>5.1(side)</code> streams.<br/>
+A simple audio filter can fix that: <code>-af "channelmap=channel_layout=5.1"</code>
