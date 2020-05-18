@@ -39,7 +39,7 @@ Slower presets / higher CRF are not worth pursuing, as the encoding time inflate
 
 <code>no-sao=1:no-strong-intra-smoothing=1</code> are a MUST to preserve quality and avoid blurriness.
 
-### Encoding 1080p Remux to 1080 HEVC
+### Encoding 1080p Remux to 1080p HEVC-10bit
 
 This script:
 
@@ -78,7 +78,13 @@ This script:
         -c:a:2 libopus -b:a:2 512K -metadata:s:3 title="English / Opus / 7.1 / 24 bit / 48kHz / 512kbps"                \
         -c:s:0 copy                                                                                                     \
         output.mkv
+### Encoding 2160p HDR10 Remux to 1080p HEVC-10but
 
+Same as above, but we apply a <conde>lanczos</code> scale video filter.
+
+<code>-vf=scale=1920:800 -sws_flags lanczos</code>
+
+See also HDR flags in the section below. HDR -> SDR tonemapping is totally not worthy.
 
 ### Encoding 2160p HDR10 Remux to 2160p HEVC-10bit
 
