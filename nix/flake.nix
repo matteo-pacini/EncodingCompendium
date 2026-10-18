@@ -42,8 +42,9 @@
       # One entry script with lib/ beside it, as the scripts expect. The
       # source is the flake's repository (tracked files only), so this
       # needs a git or github flake reference with ?dir=nix, not path:./nix.
+      # extraWrap: more makeWrapper options.
       script =
-        pkgs: name:
+        pkgs: name: extraWrap:
         pkgs.stdenvNoCC.mkDerivation {
           pname = name;
           version = self.shortRev or self.dirtyShortRev or "dev";
@@ -53,7 +54,7 @@
             mkdir -p $out/libexec/encoding-compendium $out/bin
             cp -r ${name}.sh lib $out/libexec/encoding-compendium/
             makeWrapper $out/libexec/encoding-compendium/${name}.sh $out/bin/${name} \
-              --prefix PATH : ${pkgs.lib.makeBinPath (encoders pkgs ++ userland pkgs)}
+              --prefix PATH : ${pkgs.lib.makeBinPath (encoders pkgs ++ userland pkgs)} ${extraWrap}
           '';
           meta.mainProgram = name;
         };
@@ -64,8 +65,13 @@
           name = "encoding-compendium-tools";
           paths = encoders pkgs ++ userland pkgs;
         };
-        hevc-1080p-sdr = script pkgs "hevc-1080p-sdr";
-        hevc-2160p-hdr = script pkgs "hevc-2160p-hdr";
+        hevc-1080p-sdr = script pkgs "hevc-1080p-sdr" "";
+        hevc-2160p-hdr = script pkgs "hevc-2160p-hdr" "";
+        # Workers fetch their tools from the commit this was built from.
+        hevc-farm = script pkgs "hevc-farm" (
+          pkgs.lib.optionalString (self ? rev)
+            "--set-default FARM_REF 'github:matteo-pacini/EncodingCompendium/${self.rev}?dir=nix'"
+        );
       });
 
       apps = forAllSystems (pkgs: {
@@ -76,6 +82,10 @@
         hevc-2160p-hdr = {
           type = "app";
           program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.hevc-2160p-hdr}/bin/hevc-2160p-hdr";
+        };
+        hevc-farm = {
+          type = "app";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.hevc-farm}/bin/hevc-farm";
         };
       });
 

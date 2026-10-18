@@ -131,6 +131,8 @@ setup_workdir() {
 
 cleanup() {
     kill_tree $$
+    # A script with work elsewhere (hevc-farm.sh's workers) cleans it up here.
+    if declare -F cleanup_hook >/dev/null; then cleanup_hook; fi
     rm -rf "$WORK"
     # An interrupted encode cannot be resumed.
     [[ -z $PARTIAL ]] || rm -rf "$PARTIAL"

@@ -426,28 +426,34 @@ full_encode_hours() {
         'BEGIN { total = (n > 0 ? n : d * r); printf "%.1f", total / fps / 3600 }'
 }
 
+# Drops preset $1's stored measurements, with a warning, when they were made
+# for other inputs, and records its current fingerprint in CACHE.
+check_fingerprint() {
+    local preset=$1 fingerprint key
+    fingerprint=$(preset_fingerprint "$preset")
+    [[ ${CACHE[$preset.fingerprint]:-} == "$fingerprint" ]] && return 0
+    if [[ -n ${CACHE[$preset.fingerprint]:-} ]]; then
+        warn "Stored $preset measurements are for other inputs (source, settings, filters or measuring code changed) — measuring again"
+        for key in "${!CACHE[@]}"; do
+            [[ $key == "$preset@"* ]] && unset "CACHE[$key]"
+        done
+    fi
+    CACHE[$preset.fingerprint]=$fingerprint
+}
+
 # Walks every preset in PRESETS, measures the stereo gain, saves
 # <input>.analysis, then picks the preset and prints the decision. Exits
 # when no preset has a passing CRF.
 run_calibration() {
-    local i preset fingerprint key min_size best="" size
+    local i preset fingerprint min_size best="" size
     declare -gA RES_CRF=() RES_SIZE=() RES_STOPPED=() RES_FPS=() RES_SCENE_AT=() RES_SCENE_LOW=() RES_CREATED=() RES_ROWS=()
     ANALYSIS="${INPUT%.*}.analysis"
     load_analysis
 
     for i in "${!PRESET_NAMES[@]}"; do
         preset=${PRESET_NAMES[i]}
-        fingerprint=$(preset_fingerprint "$preset")
         heading "Video · preset $preset"
-        if [[ ${CACHE[$preset.fingerprint]:-} != "$fingerprint" ]]; then
-            if [[ -n ${CACHE[$preset.fingerprint]:-} ]]; then
-                warn "Stored $preset measurements are for other inputs (source, settings, filters or measuring code changed) — measuring again"
-                for key in "${!CACHE[@]}"; do
-                    [[ $key == "$preset@"* ]] && unset "CACHE[$key]"
-                done
-            fi
-            CACHE[$preset.fingerprint]=$fingerprint
-        fi
+        check_fingerprint "$preset"
         print_table_header
         walk_preset "$preset" "${PRESET_CRFS[i]}"
     done
