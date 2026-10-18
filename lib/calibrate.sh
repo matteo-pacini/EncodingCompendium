@@ -89,13 +89,15 @@ print_table_legend() {
 # Any change to the source, an encode setting, the encode or scoring filters,
 # the VMAF options or the measuring code makes a preset's stored
 # measurements stale. CRF lists and gates are not part of it: they only
-# judge measurements, so changing them reuses what is stored.
+# judge measurements, so changing them reuses what is stored. Nor is where
+# a sample was measured: the functions below are what every host runs, and
+# asm only picks x265's SIMD kernels, which are bit-exact with its C code.
 preset_fingerprint() {
     {
         stat -L -c '%s %Y' "$INPUT"
-        printf '%s\n' "$1" "$X265_PARAMS" "${COLOUR_FLAGS[*]}" "$CROP" "$CALIBRATION_SAMPLES" \
+        printf '%s\n' "$1" "${X265_PARAMS//:asm=avx512/}" "${COLOUR_FLAGS[*]}" "$CROP" "$CALIBRATION_SAMPLES" \
             "$SAMPLE_DURATION" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" "$A" "$STEREO_BITRATE"
-        declare -f cut_samples measure_crf encode_sample
+        declare -f cut_samples encode_sample score_vmaf score_xpsnr aggregate_crf
     } | sha256sum | cut -d' ' -f1
 }
 
@@ -270,14 +272,34 @@ cut_samples() {
     SAMPLES_CUT=1
 }
 
+# Scores encode $1 against reference $2 with libvmaf (VMAF_OPTIONS),
+# writing the per-frame JSON log to $3; further arguments go to ffmpeg
+# before its inputs.
+score_vmaf() {
+    ffmpeg -nostdin -v error "${@:4}" -i "$1" -i "$2" \
+        -lavfi "[0:v]$DIST_FILTER[d];[1:v]$REF_FILTER[r];[d][r]libvmaf=$VMAF_OPTIONS:n_threads=$(nproc):log_fmt=json:log_path=$3" -f null -
+}
+
+# Scores encode $1 against reference $2 with XPSNR, whose summary goes to
+# stderr; further arguments go to ffmpeg before its inputs.
+# ffmpeg 9.0.1's xpsnr misreads 10-bit rows unless a frame's stride is
+# exactly its width (identical inputs score ≈ 10 dB). A crop keeps its
+# parent's stride, so both inputs are padded, identically, into new frames a
+# multiple of 64 wide.
+score_xpsnr() {
+    ffmpeg -nostdin -hide_banner "${@:3}" -i "$1" -i "$2" \
+        -lavfi "[0:v]$DIST_FILTER,pad=ceil((iw+1)/64)*64:ih[d];[1:v]$REF_FILTER,pad=ceil((iw+1)/64)*64:ih[r];[d][r]xpsnr" \
+        -f null -
+}
+
+# The Y value from score_xpsnr's summary on stdin.
+xpsnr_y() { grep -o 'XPSNR  y: *[0-9.]*' | tail -1 | grep -o '[0-9.]*$'; }
+
 # Encodes and scores every sample at one preset and CRF
 # (`measure_crf <preset> <crf>`) under the live block, and stores the
 # measurements in CACHE["<preset>@<crf>"].
 measure_crf() {
-    local preset=$1 crf=$2 n ref enc log start end frames xpsnr low cambi neg neg_low mbps xpsnr_mean est_bytes
-    local enc_bytes=0 frames_total=0 xpsnr_weighted=0 scene_low=101 scene_at="" cambi_max=0 enc_seconds=0 w warnings=()
-    local audio_bps=$(( $(stream_bps "$A") + ${STEREO_BITRATE%k} * 1000 ))
-
+    local preset=$1 crf=$2 n ref enc log start end frames
     cut_samples
     BLOCK_CRF=$crf
     for ((n = 0; n < CALIBRATION_SAMPLES; n++)); do
@@ -286,22 +308,28 @@ measure_crf() {
         start=$(date +%s.%N)
         run_step 0 "${SAMPLE_FRAMES[n]}" encode_sample "$preset" "$crf" "$ref" "$enc" -nostats -progress pipe:1
         end=$(date +%s.%N)
-
         frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$enc")
+        run_step 1 "$frames" score_vmaf "$enc" "$ref" "$log" -nostats -progress pipe:1
+        # XPSNR's summary is on stderr; stdout carries the progress.
+        run_step 2 "$frames" score_xpsnr "$enc" "$ref" -nostats -progress pipe:1 2>"$WORK/xpsnr.log"
+        echo "$frames $(stat -c %s "$enc") $(awk -v s="$start" -v e="$end" 'BEGIN { printf "%f", e - s }') $(xpsnr_y <"$WORK/xpsnr.log")" \
+            >"$WORK/result-$preset-$crf-$n"
+    done
+    clear_block
+    aggregate_crf "$preset" "$crf"
+}
+
+# Pools one preset and CRF's samples into CACHE["<preset>@<crf>"]: for each
+# sample n, $WORK/result-<preset>-<crf>-<n> ("frames bytes encode-seconds
+# xpsnr") and its VMAF log $WORK/vmaf-<preset>-<crf>-<n>.json.
+aggregate_crf() {
+    local preset=$1 crf=$2 n log frames bytes seconds xpsnr low cambi neg neg_low mbps xpsnr_mean est_bytes
+    local enc_bytes=0 frames_total=0 xpsnr_weighted=0 scene_low=101 scene_at="" cambi_max=0 enc_seconds=0 w warnings=()
+    local audio_bps=$(( $(stream_bps "$A") + ${STEREO_BITRATE%k} * 1000 ))
+    for ((n = 0; n < CALIBRATION_SAMPLES; n++)); do
+        log="$WORK/vmaf-$preset-$crf-$n.json"
+        read -r frames bytes seconds xpsnr <"$WORK/result-$preset-$crf-$n"
         [[ $frames == "${SAMPLE_FRAMES[n]}" ]] || warnings+=("$preset CRF $crf sample $n: reference has ${SAMPLE_FRAMES[n]} frames, encode has $frames — scores may be misaligned.")
-
-        run_step 1 "$frames" ffmpeg -nostdin -v error -nostats -progress pipe:1 -i "$enc" -i "$ref" \
-            -lavfi "[0:v]$DIST_FILTER[d];[1:v]$REF_FILTER[r];[d][r]libvmaf=$VMAF_OPTIONS:n_threads=$(nproc):log_fmt=json:log_path=$log" -f null -
-        # XPSNR prints its summary to stderr; stdout carries the progress.
-        # ffmpeg 9.0.1's xpsnr misreads 10-bit rows unless a frame's stride
-        # is exactly its width (identical inputs score ≈ 10 dB). A crop
-        # keeps its parent's stride, so both inputs are padded, identically,
-        # into new frames a multiple of 64 wide.
-        run_step 2 "$frames" ffmpeg -nostdin -hide_banner -nostats -progress pipe:1 -i "$enc" -i "$ref" \
-            -lavfi "[0:v]$DIST_FILTER,pad=ceil((iw+1)/64)*64:ih[d];[1:v]$REF_FILTER,pad=ceil((iw+1)/64)*64:ih[r];[d][r]xpsnr" \
-            -f null - 2>"$WORK/xpsnr.log"
-        xpsnr=$(grep -o 'XPSNR  y: *[0-9.]*' "$WORK/xpsnr.log" | tail -1 | grep -o '[0-9.]*$')
-
         # CAMBI's worst frame, not its mean: a sample's mean stays low while a
         # few dark frames band visibly.
         read -r low cambi < <(jq -r '
@@ -311,11 +339,10 @@ measure_crf() {
             scene_low=$low scene_at=$(hms "${SAMPLES_AT[n]}")
         fi
         read -r cambi_max enc_seconds enc_bytes frames_total xpsnr_weighted < <(awk -v c="$cambi" -v cm="$cambi_max" \
-            -v t="$enc_seconds" -v s="$start" -v e="$end" -v b="$enc_bytes" -v sz="$(stat -c %s "$enc")" \
+            -v t="$enc_seconds" -v s="$seconds" -v b="$enc_bytes" -v sz="$bytes" \
             -v f="$frames_total" -v n="$frames" -v x="$xpsnr_weighted" -v xp="${xpsnr:-0}" \
-            'BEGIN { printf "%f %f %d %d %f\n", (c > cm ? c : cm), t + e - s, b + sz, f + n, x + xp * n }')
+            'BEGIN { printf "%f %f %d %d %f\n", (c > cm ? c : cm), t + s, b + sz, f + n, x + xp * n }')
     done
-    clear_block
     for w in "${warnings[@]}"; do
         warn "$w"
     done
@@ -330,6 +357,16 @@ measure_crf() {
         'BEGIN { v = b * 8 / (f / r); printf "%.1f %.2f %.0f\n", v / 1e6, x / f, d * (v + a) / 8 }')
     CACHE[$preset@$crf]=$(printf '%s\t' "$(date '+%Y-%m-%d %H:%M')" "$neg" "$neg_low" "$scene_low" "$scene_at" \
         "$cambi_max" "$xpsnr_mean" "$mbps" "$est_bytes" "$frames_total" "$enc_seconds")
+}
+
+# Prints the first gate a CRF fails (mean, 1%-low, scene, banding, knee), or
+# nothing when it passes: `crf_verdict <neg> <1%-low> <scene 1%-low> <cambi>
+# <xpsnr step> <previous step>`, the steps empty for the walk's first CRF.
+crf_verdict() {
+    awk -v m="$1" -v l="$2" -v sl="$3" -v c="$4" -v st="$5" -v ps="$6" \
+        -v tm="$VMAF_TARGET_MEAN" -v tl="$VMAF_TARGET_LOW" -v cx="$CAMBI_MAX" -v k="$KNEE_RATIO" 'BEGIN {
+            if (m < tm) print "mean"; else if (l < tl) print "1%-low"; else if (sl < tl) print "scene"
+            else if (c > cx) print "banding"; else if (ps != "" && ps > 0 && st > k * ps) print "knee" }'
 }
 
 # Walks one preset's CRFs (`walk_preset <preset> <crf list>`), lowest first,
@@ -358,10 +395,7 @@ walk_preset() {
         seconds_all=$(awk -v a="$seconds_all" -v b="$seconds" 'BEGIN { print a + b }')
         step=$( [[ -n $prev_xpsnr ]] && awk -v p="$prev_xpsnr" -v x="$xpsnr" 'BEGIN { printf "%.2f", p - x }' || true)
 
-        failed=$(awk -v m="$neg" -v l="$neg_low" -v sl="$scene_low" -v c="$cambi" -v st="$step" -v ps="$prev_step" \
-            -v tm="$VMAF_TARGET_MEAN" -v tl="$VMAF_TARGET_LOW" -v cx="$CAMBI_MAX" -v k="$KNEE_RATIO" 'BEGIN {
-                if (m < tm) print "mean"; else if (l < tl) print "1%-low"; else if (sl < tl) print "scene"
-                else if (c > cx) print "banding"; else if (ps != "" && ps > 0 && st > k * ps) print "knee" }')
+        failed=$(crf_verdict "$neg" "$neg_low" "$scene_low" "$cambi" "$step" "$prev_step")
         if [[ -z $failed ]]; then
             verdict="pass"
             chosen=$crf chosen_size=$est_bytes
