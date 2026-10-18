@@ -18,13 +18,13 @@ declare -A ASM=(
 )
 SPIKE_DIR=spike-run   # under $HOME on every host, the master included
 
-SSH_OPTS=(-o BatchMode=yes -o Compression=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o Compression=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4
     -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/spike-%C" -o ControlPersist=15m)
 
 # Runs the bash script on stdin on host $1, in $HOME/$SPIKE_DIR, inside the
 # flake's tools, under the host's wrapper.
 on() {
-    local host=$1 cmd="mkdir -p $SPIKE_DIR && cd $SPIKE_DIR && ${WRAP[$1]} nix shell --quiet '$REF#tools' --command bash -s"
+    local host=$1 cmd="mkdir -p $SPIKE_DIR && cd $SPIKE_DIR && ${WRAP[$1]:-} nix shell --quiet '$REF#tools' --command bash -s"
     if [[ $host == "$MASTER" ]]; then
         (cd "$HOME" && bash -c "$cmd")
     else
