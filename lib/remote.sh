@@ -229,7 +229,9 @@ require_workers() {
             SLOT_ARM+=("$( [[ $system == x86_64-* ]] || echo 1)")
             slots="1 slot"
         fi
-        requirement "$host" yes "$system · ${cpu:-?} · $threads threads · ${simd##* } · $slots · $(human_bytes "$free") free$(
+        # Model names trimmed to the model.
+        cpu=$(sed -E 's/\((R|TM)\)//g; s/ CPU//; s/ @ .*//; s/ w\/ .*//; s/^(Intel|AMD) //' <<<"${cpu:-?}")
+        requirement "$host" yes "$system · $cpu · $threads threads · ${simd##* } · $slots · $(human_bytes "$free") free$(
             [[ $host == "$FARM_LOCAL" ]] && echo " · this host" || {
                 [[ $system == "$local_system" ]] && echo " · same builds" || echo " · x265 ${x265v#version } · ffmpeg $ffmpegv"; }
             )${WRAP[$host]:+ · under ${WRAP[$host]}}"

@@ -64,12 +64,13 @@ report_video() {
     [[ -n $V_HDR || $V_TRANSFER == smpte2084 || $V_TRANSFER == arib-std-b67 ]] && V_IS_HDR=1
 
     heading "Video  ${DIM}#$V${RESET}"
-    kv "Codec"         "$(probe ".streams[$V].codec_long_name") · $(probe ".streams[$V].profile")$V_LEVEL"
+    kv "Codec"         "${V_CODEC^^} · $(probe ".streams[$V].profile")$V_LEVEL"
     kv "Resolution"    "${V_WIDTH}×${V_HEIGHT}  (DAR $(probe ".streams[$V].display_aspect_ratio"), SAR $(probe ".streams[$V].sample_aspect_ratio"))"
     kv "Frame rate"    "$(awk -v f="$V_FPS" 'BEGIN { split(f, p, "/"); printf "%.3f", p[1] / p[2] }') fps ($V_FPS)$(probe ".streams[$V].field_order" | sed 's/^/ · /')"
     kv "Frames"        "${V_FRAMES:-unknown}"
     kv "Pixel format"  "$V_PIXFMT · ${V_DEPTH:-?}-bit · chroma loc ${V_CHROMALOC:-unspecified}"
-    kv "Colour"        "primaries ${V_PRIMARIES:-untagged} · transfer ${V_TRANSFER:-untagged} · matrix ${V_MATRIX:-untagged} · range ${V_RANGE:-untagged}"
+    # Primaries, transfer, matrix, range.
+    kv "Colour"        "${V_PRIMARIES:-untagged} · ${V_TRANSFER:-untagged} · ${V_MATRIX:-untagged} · ${V_RANGE:-untagged}"
     local hdr=${V_HDR:-none (SDR)}
     # Some remuxes carry HDR10 metadata only in the frames, not the stream.
     [[ -z $V_HDR && -n $V_IS_HDR ]] && hdr="none at stream level · $V_TRANSFER"
@@ -214,7 +215,7 @@ report_subtitles() {
     FIX_V_LANG=""
     if [[ -n $V_LANG && $V_LANG != "$A_LANG" && $V_LANG != und && $A_LANG != und ]]; then
         FIX_V_LANG=$A_LANG
-        WARNINGS+=("Video track is tagged '$V_LANG' but the primary audio is '$A_LANG' — the video language will be set to '$A_LANG'.")
+        WARNINGS+=("Video tagged '$V_LANG', main audio '$A_LANG': video set to '$A_LANG'.")
     fi
 }
 

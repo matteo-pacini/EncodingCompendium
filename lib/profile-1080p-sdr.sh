@@ -38,7 +38,7 @@ profile_requirements() {
 profile_analysis() {
     report_container
     report_video
-    [[ -z $V_PRIMARIES ]] && WARNINGS+=("Video colour is untagged; Blu-ray 1080p is BT.709 by specification, so it will be tagged as such.")
+    [[ -z $V_PRIMARIES ]] && WARNINGS+=("Untagged colour: tagged BT.709, as Blu-ray 1080p is.")
     (( V_HEIGHT > 1080 )) && WARNINGS+=("Source is taller than 1080p — this script assumes a 1080p source.")
     detect_crop
     report_audio

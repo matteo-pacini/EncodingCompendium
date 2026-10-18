@@ -8,9 +8,12 @@ REQUIREMENTS_FAILED=0
 requirement() {
     local label=$1 met=$2 detail=$3
     if [[ $met == yes ]]; then
-        printf '  %s✔%s %-20s %s%s%s\n' "$GREEN" "$RESET" "$label" "$DIM" "$detail" "$RESET"
+        printf '  %s✔%s %-20s %s' "$GREEN" "$RESET" "$label" "$DIM"
+        wrap_text 25 "$detail"
+        printf '%s' "$RESET"
     else
-        printf '  %s✖%s %-20s %s\n' "$RED" "$RESET" "$label" "$detail"
+        printf '  %s✖%s %-20s ' "$RED" "$RESET" "$label"
+        wrap_text 25 "$detail"
         REQUIREMENTS_FAILED=1
     fi
 }
@@ -21,7 +24,7 @@ require_tool() {
     local tool=$1
     shift
     if command -v "$tool" >/dev/null; then
-        requirement "$tool" yes "$("$tool" "$@" 2>&1 | head -1)"
+        requirement "$tool" yes "$("$tool" "$@" 2>&1 | head -1 | sed 's/ Copyright.*//')"
     else
         requirement "$tool" no "not on PATH (try: nix develop path:./nix)"
     fi

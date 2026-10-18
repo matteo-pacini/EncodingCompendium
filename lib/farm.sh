@@ -9,8 +9,10 @@
 
 # A job failing this many times stops the run: the fault is the job's.
 FARM_ATTEMPTS=3
-# Whether the progress block is on screen, to be redrawn over.
+# Lines of the progress block on screen, to be redrawn over.
 FARM_DRAWN=0
+# farm_schedule's queues.
+FARM_QUEUE=() FARM_EXTRA=() FARM_DETAIL=""
 
 # Reads a job's stdout into the slot's state: "step=<name>" lines name the
 # step, ffmpeg -progress lines count its frames, "result=<line>" is kept as
@@ -28,14 +30,14 @@ farm_follow() {
     done
 }
 
-# The progress block: one line per slot, then a total line from FARM_TOTAL
-# (a function printing it).
+# The progress block: one line per slot, then the total line from FARM_TOTAL
+# and, when FARM_DETAIL is set, its line: both name functions printing them.
 farm_draw() {
     [[ -t 1 ]] || return 0
-    local i cols frame fps step total label pct eta line
+    local i cols frame fps step total label pct eta line lines=()
     cols=$(stty size </dev/tty 2>/dev/null) && cols=${cols##* } || cols=100
     (( cols > 40 )) || cols=100
-    (( FARM_DRAWN )) && printf '\e[%dA' $(( ${#SLOT_HOST[@]} + 1 ))
+    (( FARM_DRAWN )) && printf '\e[%dA' "$FARM_DRAWN"
     for i in "${!SLOT_HOST[@]}"; do
         read -r frame fps step 2>/dev/null <"$FARM/slot-$i.state" || { frame=0 fps=0 step=""; }
         total=$(cat "$FARM/slot-$i.total" 2>/dev/null || echo 0)
@@ -49,35 +51,71 @@ farm_draw() {
                 printf "%.0f ", (t > 0 ? f / t * 100 : 0)
                 if (r > 0 && t > f) { e = (t - f) / r; printf "%d:%02d\n", e / 60, e % 60 } else print "—" }')
             line=$(printf '%-14s %s %3s%% · %5s fps · ETA %5s · %s%s' "${SLOT_NAME[i]}" \
-                "$(bar "$(awk -v f="$frame" -v t="$total" 'BEGIN { print (t > 0 ? f / t : 0) }')" 16)" \
+                "$(bar "$(awk -v f="$frame" -v t="$total" 'BEGIN { print (t > 0 ? f / t : 0) }')" 12)" \
                 "$pct" "$fps" "$eta" "$label" "${step:+ · $step}")
         fi
+        lines+=("$line")
+    done
+    lines+=("$BOLD$($FARM_TOTAL)$RESET")
+    [[ -n ${FARM_DETAIL:-} ]] && lines+=("$DIM$($FARM_DETAIL)$RESET")
+    for line in "${lines[@]}"; do
         # Cut by characters: a wrapped line breaks the redraw.
-        (( ${#line} > cols - 4 )) && line="${line:0:cols-5}…"
+        (( ${#line} > cols - 4 )) && line="${line:0:cols-5}…$RESET"
         printf '\r\e[K  %s\n' "$line"
     done
-    line=$($FARM_TOTAL)
-    (( ${#line} > cols - 4 )) && line="${line:0:cols-5}…"
-    printf '\r\e[K  %s%s%s\n' "$BOLD" "$line" "$RESET"
-    FARM_DRAWN=1
+    FARM_DRAWN=${#lines[@]}
 }
 
 # Prints a line above the progress block.
 farm_event() {
     if [[ -t 1 ]] && (( FARM_DRAWN )); then
-        printf '\e[%dA\e[J' $(( ${#SLOT_HOST[@]} + 1 ))
+        printf '\e[%dA\e[J' "$FARM_DRAWN"
         FARM_DRAWN=0
     fi
     printf '  %s\n' "$*"
 }
 
-# Runs every job in FARM_QUEUE to success. FARM_TOTAL names the function
-# printing the total line; FARM_DONE counts the finished jobs.
+# Frames a job works through: its size for farm_defer.
+job_frames() {
+    local args
+    IFS=: read -r -a args <<<"$1"
+    case ${args[0]} in
+        sample) echo "${SAMPLE_FRAMES[${args[3]}]}" ;;
+        chunk) echo $(( CHUNK_START[args[1] + 1] - CHUNK_START[args[1]] )) ;;
+    esac
+}
+
+# Whether free slot $1 should leave job $2 to others: only when, counting
+# the job each busy slot still has, at least as many slots as there are
+# queued jobs would finish it sooner. It only bites at the end, where a slow
+# slot starting the last job would keep every other slot waiting. Speeds
+# are frames per second of each slot's finished jobs in this schedule.
+farm_defer() {
+    local i=$1 size f now sooner=0
+    (( ${SLOT_SEC[i]:-0} > 0 )) || return 1
+    size=$(job_frames "$2")
+    now=$EPOCHREALTIME
+    for f in "${!SLOT_HOST[@]}"; do
+        (( f != i )) && [[ -z ${SLOT_DOWN[f]:-} ]] && (( ${SLOT_SEC[f]:-0} > 0 )) || continue
+        awk -v s="$size" -v fi="${SLOT_FR[i]}" -v si="${SLOT_SEC[i]}" -v ff="${SLOT_FR[f]}" -v sf="${SLOT_SEC[f]}" \
+            -v busy="$(job_frames "${SLOT_JOB[f]:-}" 2>/dev/null)" -v start="${SLOT_START[f]:-$now}" -v now="$now" 'BEGIN {
+                rf = ff / sf; left = (busy > 0 ? busy / rf - (now - start) : 0); if (left < 0) left = 0
+                exit !(left + s / rf < s / (fi / si)) }' && sooner=$((sooner + 1))
+    done
+    (( sooner >= ${#FARM_PENDING[@]} )) && FARM_HELD=$2
+}
+
+# Runs every job in FARM_QUEUE to success. A slot with nothing left in it
+# takes a job from FARM_EXTRA, work ahead that may be wanted later, until
+# FARM_QUEUE's last job is done; extras then running are let finish.
+# FARM_TOTAL names the function printing the total line; FARM_DONE and
+# FARM_AHEAD count the finished jobs of each queue.
 farm_schedule() {
-    local i id rc pending=("${FARM_QUEUE[@]}") busy alive key err
-    declare -gA FARM_TRIES=()
-    declare -ga SLOT_JOB=()
-    FARM_DONE=0 FARM_DRAWN=0
+    local i id rc pending=("${FARM_QUEUE[@]}") extra=("${FARM_EXTRA[@]}") busy needed alive key err
+    declare -gA FARM_TRIES=() FARM_IS_EXTRA=()
+    declare -ga SLOT_JOB=() SLOT_START=() SLOT_FR=() SLOT_SEC=()
+    FARM_DONE=0 FARM_AHEAD=0 FARM_DRAWN=0
+    for id in "${extra[@]}"; do FARM_IS_EXTRA[$id]=1; done
     mkdir -p "$FARM/jobs"
     while :; do
         for i in "${!SLOT_HOST[@]}"; do
@@ -88,7 +126,10 @@ farm_schedule() {
             rm -f "$FARM/jobs/$key.rc" "$FARM/slot-$i.state" "$FARM/slot-$i.label"
             SLOT_JOB[i]=""
             if (( rc == 0 )); then
-                FARM_DONE=$((FARM_DONE + 1))
+                if [[ -n ${FARM_IS_EXTRA[$id]:-} ]]; then FARM_AHEAD=$((FARM_AHEAD + 1)); else FARM_DONE=$((FARM_DONE + 1)); fi
+                # Whole seconds keep the speeds bash arithmetic; jobs last minutes.
+                SLOT_FR[i]=$(( ${SLOT_FR[i]:-0} + $(job_frames "$id") ))
+                SLOT_SEC[i]=$(( ${SLOT_SEC[i]:-0} + ${EPOCHSECONDS} - ${SLOT_START[i]%.*} ))
                 continue
             fi
             FARM_TRIES[$id]=$(( ${FARM_TRIES[$id]:-0} + 1 ))
@@ -102,16 +143,31 @@ farm_schedule() {
                 farm_event "$YELLOW▲$RESET ${SLOT_NAME[i]}: ${id} failed (status $rc${err:+: $err}) — queued again"
             fi
             (( FARM_TRIES[$id] < FARM_ATTEMPTS )) || die "${id} failed $FARM_ATTEMPTS times — see $FARM/jobs/$key.err"
-            pending=("$id" "${pending[@]}")
+            if [[ -n ${FARM_IS_EXTRA[$id]:-} ]]; then extra=("$id" "${extra[@]}"); else pending=("$id" "${pending[@]}"); fi
+        done
+        FARM_HELD=""
+        # Whether FARM_QUEUE still has work, queued or running.
+        needed=$(( ${#pending[@]} > 0 ))
+        for i in "${!SLOT_HOST[@]}"; do
+            [[ -n ${SLOT_JOB[i]:-} && -z ${FARM_IS_EXTRA[${SLOT_JOB[i]}]:-} ]] && needed=1
         done
         alive=0
         for i in "${!SLOT_HOST[@]}"; do
             [[ -n ${SLOT_DOWN[i]:-} ]] && continue
             alive=1
-            [[ -z ${SLOT_JOB[i]:-} && ${#pending[@]} -gt 0 ]] || continue
-            id=${pending[0]}
-            pending=("${pending[@]:1}")
-            SLOT_JOB[i]=$id
+            [[ -z ${SLOT_JOB[i]:-} ]] || continue
+            if (( ${#pending[@]} > 0 )); then
+                FARM_PENDING=("${pending[@]}")
+                farm_defer "$i" "${pending[0]}" && continue
+                id=${pending[0]}
+                pending=("${pending[@]:1}")
+            elif (( needed && ${#extra[@]} > 0 )); then
+                id=${extra[0]}
+                extra=("${extra[@]:1}")
+            else
+                continue
+            fi
+            SLOT_JOB[i]=$id SLOT_START[i]=$EPOCHREALTIME
             key=${id//[:\/]/_}
             # The EXIT trap reports the status even when the job aborts
             # (set -e, set -u), or the slot would wait for it forever.
@@ -153,7 +209,7 @@ slot_params() {
 farm_job_sample() {
     local i=$1 preset=$2 crf=$3 n=$4 id="sample:$2:$3:$4" key
     key=${id//[:\/]/_}
-    farm_label "$i" "$preset CRF $crf · sample $((n + 1))/$CALIBRATION_SAMPLES" "${SAMPLE_FRAMES[n]}"
+    farm_label "$i" "$preset $crf · $((n + 1))/$CALIBRATION_SAMPLES" "${SAMPLE_FRAMES[n]}"
     slot_put "$i" "$WORK/ref$n.mkv" "ref$n.mkv" || return
     {
         printf 'set -euo pipefail\n'
@@ -167,7 +223,7 @@ start=\$(date +%s.%N)
 encode_sample $preset $crf ref$n.mkv "\$enc" -nostats -progress pipe:1
 end=\$(date +%s.%N)
 frames=\$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "\$enc")
-echo step=VMAF+CAMBI
+echo step=VMAF
 score_vmaf "\$enc" ref$n.mkv "\$log" -nostats -progress pipe:1
 echo step=XPSNR
 score_xpsnr "\$enc" ref$n.mkv -nostats -progress pipe:1 2>xpsnr-$preset-$crf-$n.log
@@ -184,22 +240,27 @@ EOF
 
 calibration_total() {
     printf 'Calibration · %d/%d samples' "$FARM_DONE" "${#FARM_QUEUE[@]}"
+    (( FARM_AHEAD == 0 )) || printf ' · %d ahead' "$FARM_AHEAD"
 }
+
+# Whether sample $3 of preset $1 at CRF $2 is measured (here or ahead).
+sample_done() { [[ -s $WORK/result-$1-$2-$3 && -s $WORK/vmaf-$1-$2-$3.json ]]; }
 
 # Measures, on every slot at once, what walk_preset will need: each round
 # takes every preset's next unmeasured CRF, all their samples queued
 # together; a CRF failing a gate ends its preset's walk, as in walk_preset.
-# run_calibration then finds everything stored.
+# Slots left idle at a round's end measure each preset's CRF after that,
+# kept for the next round. run_calibration then finds everything stored.
 farm_calibrate() {
-    local i preset crf p rounds=0 created neg neg_low scene_low scene_at cambi xpsnr step failed
+    local i n preset crf p rounds=0 created neg neg_low scene_low scene_at cambi xpsnr step failed after
     declare -A next=() stopped=() prev_xpsnr=() prev_step=()
     ANALYSIS="${INPUT%.*}.analysis"
     load_analysis
     for i in "${!PRESET_NAMES[@]}"; do check_fingerprint "${PRESET_NAMES[i]}"; done
     save_analysis
     while :; do
-        local round=()
-        FARM_QUEUE=()
+        local round=() ahead=()
+        FARM_QUEUE=() FARM_EXTRA=()
         for i in "${!PRESET_NAMES[@]}"; do
             preset=${PRESET_NAMES[i]}
             [[ -n ${stopped[$preset]:-} ]] && continue
@@ -208,6 +269,8 @@ farm_calibrate() {
                 crf=${crfs[${next[$preset]:-0}]}
                 if [[ -z ${CACHE[$preset@$crf]:-} ]]; then
                     round+=("$preset@$crf")
+                    after=${crfs[${next[$preset]:-0} + 1]:-}
+                    [[ -n $after && -z ${CACHE[$preset@$after]:-} ]] && ahead+=("$preset@$after")
                     break
                 fi
                 # Stored: judged now, exactly as walk_preset will.
@@ -226,11 +289,19 @@ farm_calibrate() {
         fi
         rounds=$((rounds + 1))
         for p in "${round[@]}"; do
-            for ((i = 0; i < CALIBRATION_SAMPLES; i++)); do FARM_QUEUE+=("sample:${p%@*}:${p#*@}:$i"); done
+            for ((n = 0; n < CALIBRATION_SAMPLES; n++)); do
+                sample_done "${p%@*}" "${p#*@}" "$n" || FARM_QUEUE+=("sample:${p%@*}:${p#*@}:$n")
+            done
         done
-        farm_event "${BOLD}Round $rounds${RESET} · $(printf '%s ' "${round[@]//@/ CRF }")· ${#FARM_QUEUE[@]} samples"
+        for p in "${ahead[@]}"; do
+            for ((n = 0; n < CALIBRATION_SAMPLES; n++)); do
+                sample_done "${p%@*}" "${p#*@}" "$n" || FARM_EXTRA+=("sample:${p%@*}:${p#*@}:$n")
+            done
+        done
+        farm_event "${BOLD}Round $rounds${RESET} · $(printf '%s ' "${round[@]//@/ CRF }")· ${#FARM_QUEUE[@]} samples$(
+            (( ${#ahead[@]} > 0 )) && echo " · idle slots ahead on $(printf '%s ' "${ahead[@]//@/ CRF }")")"
         FARM_TOTAL=calibration_total
-        farm_schedule
+        (( ${#FARM_QUEUE[@]} == 0 )) || farm_schedule
         for p in "${round[@]}"; do
             aggregate_crf "${p%@*}" "${p#*@}"
             farm_event "$GREEN✔$RESET ${p%@*} CRF ${p#*@} measured"
@@ -248,58 +319,62 @@ farm_calibrate() {
 # Seconds of film per chunk: short enough to keep every slot busy to the
 # end, long enough that the joins are few.
 CHUNK_SECONDS=180
-# How far from its target a join may move to land on a scene cut.
-CHUNK_WINDOW=15
+# How far from its target a join may move to land on a scene cut, tried in
+# turn: a wider window costs a longer decode, and a chunk's length matters
+# little, as the queue evens the slots out.
+CHUNK_WINDOWS=(15 30 60)
 
 # Plans the chunks: CHUNK_START (first frame of each, then the frame count)
-# and CHUNK_TIME (each join's timestamp), every join on a source keyframe,
-# on a scene cut when one is within CHUNK_WINDOW s of the target. A chunk
-# opening mid-scene starts from a cold keyframe the continuous encode does
-# not have, which can band on dark gradients.
+# and CHUNK_TIME (each join's timestamp). Every join is a source keyframe
+# on a scene cut within CHUNK_WINDOWS of its target; a target with none is
+# dropped, its two chunks made one. A chunk opening mid-scene would start
+# from a cold keyframe the continuous encode does not have, which can band
+# on dark gradients.
 plan_chunks() {
-    local packets="$WORK/packets" targets k t from scores best kind mid=0
+    local packets="$WORK/packets" targets k t w from scores best dropped=()
     progress "Reading the video's packet index…"
     # "pts|pts_time|flags" per frame, in presentation order.
     ffprobe -v error -select_streams "$V" -show_entries packet=pts,pts_time,flags -of compact=p=0:nk=1 "$INPUT" |
         sort -t'|' -k1,1n >"$packets"
     CHUNK_FRAMES_TOTAL=$(wc -l <"$packets")
     progress ""
-    CHUNK_START=(0) CHUNK_TIME=() CHUNK_KIND=()
+    CHUNK_START=(0) CHUNK_TIME=()
     targets=$(awk -v d="$DURATION" -v c="$CHUNK_SECONDS" 'BEGIN { n = int(d / c + 0.5); for (k = 1; k < n; k++) print d * k / n }')
     k=0
     for t in $targets; do
         k=$((k + 1))
-        progress "Finding a scene cut near join $k/$(wc -w <<<"$targets") ($(hms "${t%.*}"))…"
-        from=$(awk -v t="$t" -v w="$CHUNK_WINDOW" 'BEGIN { s = t - w; print (s > 0 ? s : 0) }')
-        # scdet's score for each decoded frame, by pts (copyts keeps the
-        # source's; pts_time is printed to 6 significant digits only). Above
-        # 5, not its default 10, which misses most cuts in dark films.
-        scores=$(ffmpeg -nostdin -hide_banner -copyts -ss "$from" -t $((2 * CHUNK_WINDOW)) -i "$INPUT" -map 0:"$V" \
-            -vf "scale=960:-2,scdet=threshold=0,metadata=print:key=lavfi.scd.score" -f null - 2>&1 |
-            awk '/ pts:/ { sub(/.* pts:/, ""); p = $1 } /lavfi.scd.score=/ { sub(/.*=/, ""); print p, $1 }')
-        read -r best kind < <(awk -F'|' -v t="$t" -v w="$CHUNK_WINDOW" -v prev="${CHUNK_START[-1]}" -v sc="$scores" '
-            BEGIN { n = split(sc, a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, " "); score[f[1]] = f[2] } }
-            $3 ~ /K/ && NR - 1 > prev && $2 >= t - w && $2 <= t + w {
-                d = ($2 - t) * ($2 - t)
-                if (score[$1] > 5 && (cut == "" || d < cd)) { cut = NR - 1; cd = d }
-                if (key == "" || d < kd) { key = NR - 1; kd = d }
-            }
-            END { if (cut != "") print cut, "cut"; else if (key != "") print key, "mid"; else print "", "" }' "$packets")
-        [[ -n $best ]] || continue
-        [[ $kind == mid ]] && mid=$((mid + 1))
+        for w in "${CHUNK_WINDOWS[@]}"; do
+            progress "Finding a scene cut near join $k/$(wc -w <<<"$targets") ($(hms "${t%.*}"), ±$w s)…"
+            from=$(awk -v t="$t" -v w="$w" 'BEGIN { s = t - w; print (s > 0 ? s : 0) }')
+            # scdet's score for each decoded frame, by pts (copyts keeps the
+            # source's; pts_time is printed to 6 significant digits only).
+            # Above 5, not its default 10, which misses most cuts in dark films.
+            scores=$(ffmpeg -nostdin -hide_banner -copyts -ss "$from" -t $((2 * w)) -i "$INPUT" -map 0:"$V" \
+                -vf "scale=960:-2,scdet=threshold=0,metadata=print:key=lavfi.scd.score" -f null - 2>&1 |
+                awk '/ pts:/ { sub(/.* pts:/, ""); p = $1 } /lavfi.scd.score=/ { sub(/.*=/, ""); print p, $1 }')
+            best=$(awk -F'|' -v t="$t" -v w="$w" -v prev="${CHUNK_START[-1]}" -v sc="$scores" '
+                BEGIN { n = split(sc, a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, " "); score[f[1]] = f[2] } }
+                $3 ~ /K/ && NR - 1 > prev && $2 >= t - w && $2 <= t + w && score[$1] > 5 {
+                    d = ($2 - t) * ($2 - t)
+                    if (cut == "" || d < cd) { cut = NR - 1; cd = d }
+                }
+                END { print cut }' "$packets")
+            [[ -n $best ]] && break
+        done
+        if [[ -z $best ]]; then
+            dropped+=("$(hms "${t%.*}")")
+            continue
+        fi
         CHUNK_START+=("$best")
         CHUNK_TIME+=("$(sed -n "$((best + 1))p" "$packets" | cut -d'|' -f2)")
-        CHUNK_KIND+=("$kind")
     done
     progress ""
     CHUNK_START+=("$CHUNK_FRAMES_TOTAL")
     CHUNKS=$(( ${#CHUNK_START[@]} - 1 ))
     kv "Chunks" "$CHUNKS of ≈ $(hms "$CHUNK_SECONDS") · $CHUNK_FRAMES_TOTAL frames"
-    if (( mid == 0 )); then
-        ok "Every join on a scene cut"
-    else
-        warn "$mid of $(( CHUNKS - 1 )) joins mid-scene (no cut within ${CHUNK_WINDOW} s): check them by eye"
-    fi
+    ok "Every join on a scene cut"
+    (( ${#dropped[@]} == 0 )) ||
+        item "No cut within ${CHUNK_WINDOWS[-1]} s of ${dropped[*]}: no join there, longer chunks instead"
 }
 
 # Splits the video at the planned joins into $PARTS/chunk-<k>.mkv and
@@ -352,7 +427,7 @@ EOF
     slot_rm "$i" "$name.mkv"
     got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.hevc" | wc -l)
     (( got == frames )) || { rm -f "$PARTS/$name.hevc"; echo "$name.hevc has $got frames, not $frames" >&2; return 1; }
-    echo "$frames" >>"$FARM/video-done"
+    echo "$k $frames" >>"$FARM/video-done"
 }
 
 video_total() {
@@ -360,11 +435,39 @@ video_total() {
     for i in "${!SLOT_HOST[@]}"; do
         [[ -n ${SLOT_JOB[i]:-} ]] && read -r frame _ 2>/dev/null <"$FARM/slot-$i.state" && frames=$((frames + frame))
     done
-    frames=$(( frames + $(awk '{ s += $1 } END { print s + 0 }' "$FARM/video-done" 2>/dev/null || echo 0) ))
+    frames=$(( frames + $(awk '{ s += $2 } END { print s + 0 }' "$FARM/video-done" 2>/dev/null || echo 0) ))
     awk -v f="$frames" -v t="$CHUNK_FRAMES_TOTAL" -v e="$elapsed" -v d="$FARM_DONE" -v n="$CHUNKS" 'BEGIN {
         r = (e > 0 ? f / e : 0)
         printf "Video · %d/%d chunks · %.1f%% · %.2f fps · ETA ", d, n, f / t * 100, r
         if (r > 0) { s = (t - f) / r; printf "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60 } else printf "—" }'
+}
+
+# Numbers $@ (sorted) as ranges: "1–9 12 14–16".
+ranges() {
+    awk '{ n[NR] = $1 } END {
+        for (i = 1; i <= NR; i = j + 1) {
+            for (j = i; j < NR && n[j + 1] == n[j] + 1; j++) ;
+            printf "%s%s", (i > 1 ? " " : ""), (j > i ? n[i] "–" n[j] : n[i])
+        } }' < <(printf '%s\n' "$@" | sort -n)
+}
+
+# The chunks in the queue's order, for farm_draw: farm_schedule's pending
+# list is in scope, being farm_draw's caller.
+video_detail() {
+    local i id done=() running=() retry=() next=()
+    mapfile -t done < <(awk '{ print $1 + 1 }' "$FARM/video-done" 2>/dev/null)
+    for i in "${!SLOT_HOST[@]}"; do
+        [[ ${SLOT_JOB[i]:-} == chunk:* ]] && running+=($(( ${SLOT_JOB[i]#chunk:} + 1 )))
+    done
+    for id in "${pending[@]}"; do
+        if (( ${FARM_TRIES[$id]:-0} > 0 )); then retry+=($(( ${id#chunk:} + 1 ))); else next+=($(( ${id#chunk:} + 1 ))); fi
+    done
+    printf 'Chunks'
+    (( ${#done[@]} == 0 )) || printf ' · done %s' "$(ranges "${done[@]}")"
+    (( ${#running[@]} == 0 )) || printf ' · encoding %s' "${running[*]}"
+    (( ${#retry[@]} == 0 )) || printf ' · retry %s' "${retry[*]}"
+    (( ${#next[@]} == 0 )) || printf ' · next %s' "$(ranges "${next[@]}")"
+    [[ -z ${FARM_HELD:-} ]] || printf ' (%s held for a faster slot)' "$(( ${FARM_HELD#chunk:} + 1 ))"
 }
 
 # Section 4's video step on every slot: plan, split, encode the chunks, join
@@ -385,9 +488,9 @@ farm_encode_video() {
     free=$(df --output=avail -B1 "$PARTS" | tail -1)
     (( free >= need )) || die "Needs ≈ $(human_bytes "$need") free beside the output for the chunks, $(human_bytes "$free") available"
     split_chunks
-    FARM_QUEUE=()
+    FARM_QUEUE=() FARM_EXTRA=()
     for ((k = 0; k < CHUNKS; k++)); do FARM_QUEUE+=("chunk:$k"); done
-    FARM_TOTAL=video_total FARM_VIDEO_START=$SECONDS
+    FARM_TOTAL=video_total FARM_DETAIL=video_detail FARM_VIDEO_START=$SECONDS
     ENCODE_START=$SECONDS
     farm_schedule
     ENCODE_SECONDS=$((SECONDS - ENCODE_START))

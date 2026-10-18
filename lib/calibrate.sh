@@ -420,10 +420,15 @@ walk_preset() {
     RES_ROWS[$preset]=$(printf '%s\n' "${CALIBRATED_ROWS[@]}")
 }
 
-# Encode time of the whole film at a preset's measured speed.
+# Slots the full encode runs on at once (hevc-farm.sh sets more): each
+# sample was measured on one slot, so they add up.
+ENCODE_SLOTS=1
+
+# Encode time of the whole film at a preset's measured speed, on
+# ENCODE_SLOTS.
 full_encode_hours() {
-    awk -v fps="$1" -v n="$(probe ".streams[$V].tags.NUMBER_OF_FRAMES // empty")" -v d="$DURATION" -v r="$FPS" \
-        'BEGIN { total = (n > 0 ? n : d * r); printf "%.1f", total / fps / 3600 }'
+    awk -v fps="$1" -v s="$ENCODE_SLOTS" -v n="$(probe ".streams[$V].tags.NUMBER_OF_FRAMES // empty")" -v d="$DURATION" -v r="$FPS" \
+        'BEGIN { total = (n > 0 ? n : d * r); printf "%.1f", total / (fps * s) / 3600 }'
 }
 
 # Drops preset $1's stored measurements, with a warning, when they were made
@@ -549,10 +554,10 @@ run_calibration() {
     if (( ${#unbounded[@]} + ${#floored[@]} > 0 )); then
         printf '      To check (measured CRFs are reused): %sPRESETS="%s"%s\n' "$BOLD" "$suggestion" "$RESET"
     elif [[ -z $STOPPED ]]; then
-        warn "CRF $SELECTED_CRF is the top of $PRESET's range — a higher CRF may also pass; extend it in PRESETS"
+        warn "CRF $SELECTED_CRF tops $PRESET's range: a higher one may pass too (extend PRESETS)"
     fi
     kv "Check by eye" "scene at $WORST_SCENE_AT (lowest 1%-low, $(printf '%.2f' "$WORST_SCENE_LOW"))"
-    kv "Full encode" "≈ $ENCODE_FPS fps → $(full_encode_hours "$ENCODE_FPS") h"
+    kv "Full encode" "≈ $ENCODE_FPS fps$( ((ENCODE_SLOTS > 1)) && echo " per slot × $ENCODE_SLOTS slots") → $(full_encode_hours "$ENCODE_FPS") h"
 }
 
 # Encodes the chosen preset and CRF's worst scene (SAMPLE_DURATION from

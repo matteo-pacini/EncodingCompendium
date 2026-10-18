@@ -73,7 +73,8 @@ plan_output() {
     kv "File" "$OUTPUT"
     [[ -e $OUTPUT ]] && warn "Output file already exists"
     for tag in "${TAGS[@]}"; do
-        printf '      %s%-30s%s %s\n' "$DIM" "${tag%%=*}" "$RESET" "${tag#*=}"
+        printf '      %s%-30s%s ' "$DIM" "${tag%%=*}" "$RESET"
+        wrap_text 37 "${tag#*=}"
     done
 
     [[ -e $OUTPUT ]] && die "$OUTPUT already exists — move it away first"

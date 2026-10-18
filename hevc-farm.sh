@@ -70,9 +70,10 @@ profile_settings
 
 heading "Hosts  ${DIM}${#SLOT_HOST[@]} slots${RESET}"
 if [[ $PROFILE == 2160p-hdr ]]; then
-    item "Calibration samples and the video's chunks (≈ $(hms "$CHUNK_SECONDS"), joined at scene cuts) on every slot"
+    ENCODE_SLOTS=${#SLOT_HOST[@]}
+    item "Samples and ≈ $((CHUNK_SECONDS / 60)) min chunks, joined at scene cuts, on every slot"
 else
-    item "Calibration samples on every slot; the video on $FARM_LOCAL"
+    item "Samples on every slot; the video on $FARM_LOCAL"
 fi
 for i in "${!SLOT_HOST[@]}"; do
     setting "${SLOT_NAME[i]}" "${WRAP[${SLOT_HOST[i]}]:-no wrapper}${SLOT_POOLS[i]:+ · x265 pools ${SLOT_POOLS[i]}}${SLOT_ARM[i]:+ · without asm=avx512 (ARM)}"
@@ -94,8 +95,13 @@ section "4 · Encode${DRY_RUN:+ — dry run}"
 
 if [[ $PROFILE == 2160p-hdr ]]; then
     encode_prepare
-    encode_stereo
+    # The stereo track (one core, decoding the original audio) alongside the
+    # video's chunks; its report, without the live block, follows them.
+    encode_stereo >"$WORK/stereo.log" 2>&1 &
+    STEREO_PID=$!
     farm_encode_video
+    wait "$STEREO_PID" || { cat "$WORK/stereo.log"; die "The stereo track failed"; }
+    cat "$WORK/stereo.log"
     encode_mux
 else
     profile_encode

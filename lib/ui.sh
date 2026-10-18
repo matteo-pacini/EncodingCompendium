@@ -38,12 +38,34 @@ cell() {
     printf '%*s%s%*s' "$left" '' "$text" "$right" ''
 }
 
+# Prints $2 and a newline, wrapped to WIDTH for a cursor already $1 columns
+# in, each further line indented to it. Breaks after a space, ":", ",", "|"
+# or ";" (settings and filter chains have no spaces). Text with colour codes
+# is printed as it is: its length is not its width.
+wrap_text() {
+    local indent=$1 text=$2 room=$((WIDTH - $1)) cut i
+    if [[ $text == *$'\e'* ]] || (( room < 20 )); then
+        printf '%s\n' "$text"
+        return
+    fi
+    while (( ${#text} > room )); do
+        cut=$room
+        for ((i = room; i > room / 2; i--)); do
+            case ${text:i-1:1} in ' ' | : | , | '|' | ';') cut=$i; break ;; esac
+        done
+        printf '%s\n%*s' "${text:0:cut}" "$indent" '' | sed '1s/ $//'
+        text=${text:cut}
+        text=${text# }
+    done
+    printf '%s\n' "$text"
+}
+
 heading() { printf '\n%s%s▌ %s%s\n' "$BOLD" "$CYAN" "$1" "$RESET"; }
-kv()      { printf '  %s%-22s%s %s\n' "$DIM" "$1" "$RESET" "$2"; }
-item()    { printf '  %s%s●%s %s%s%s\n' "$BOLD" "$BLUE" "$RESET" "$BOLD" "$1" "$RESET"; }
-setting() { printf '      %s%-20s%s %s%s%s\n' "$DIM" "$1" "$RESET" "$GREEN" "$2" "$RESET"; }
-ok()      { printf '  %s✔%s %s\n' "$GREEN" "$RESET" "$1"; }
-warn()    { printf '  %s▲%s %s\n' "$YELLOW" "$RESET" "$1"; }
+kv()      { printf '  %s%-22s%s ' "$DIM" "$1" "$RESET"; wrap_text 25 "$2"; }
+item()    { printf '  %s%s●%s %s' "$BOLD" "$BLUE" "$RESET" "$BOLD"; wrap_text 4 "$1"; printf '%s' "$RESET"; }
+setting() { printf '      %s%-20s%s %s' "$DIM" "$1" "$RESET" "$GREEN"; wrap_text 27 "$2"; printf '%s' "$RESET"; }
+ok()      { printf '  %s✔%s ' "$GREEN" "$RESET"; wrap_text 4 "$1"; }
+warn()    { printf '  %s▲%s ' "$YELLOW" "$RESET"; wrap_text 4 "$1"; }
 die()     { printf '%s✖ %s%s\n' "$RED" "$1" "$RESET" >&2; exit 1; }
 
 # Rewrites the current terminal line; an empty message just clears it.
