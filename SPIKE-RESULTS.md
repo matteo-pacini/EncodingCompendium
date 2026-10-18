@@ -97,6 +97,6 @@ A 10-minute excerpt (14,398 frames, from 0:40:00) was split into 4 chunks at sou
 
 ## Not covered
 
-- **Dolby Vision chunking:** RPU slicing per chunk, then checking the RPU again after the join. There was no DV source available.
+- **Dolby Vision.** The plan keeps it on the master: workers encode plain HDR10 chunks, and the master adds the source RPU to the joined stream with `dovi_tool inject-rpu`, then checks that every frame has one. Two things are untested for lack of a DV source: the x265 HRD flags chunks need without `--dolby-vision-profile`, and whether the Shield/CX show Dolby Vision.
 - **A full film end to end:** the longest test was 10 minutes.
 - **A worker dropping its network mid-job** (as opposed to its process failing). It should look like test B plus test C, but nobody pulled a cable.
