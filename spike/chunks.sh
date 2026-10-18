@@ -70,28 +70,29 @@ if [[ ! -s $SCENES ]]; then
         -f null - 2>&1 | grep -o 'lavfi.scd.score=[0-9.]*' | awk -F= '{ print NR - 1, $2 }' >"$SCENES.tmp" && mv "$SCENES.tmp" "$SCENES"
     progress ""
 fi
-# Boundary k: a source keyframe on a scene cut (score > 10), nearest to the
-# share of the frames slots 0…k-1 should encode at their speeds. A chunk
-# opening mid-scene starts from a cold keyframe the continuous encode does
-# not have, which can band on dark gradients. Falls back to the nearest
-# keyframe, marked, when the excerpt has no cut to use.
+# Boundary k: a source keyframe on a scene cut, nearest to the share of the
+# frames slots 0…k-1 should encode at their speeds, and after boundary k-1.
+# A chunk opening mid-scene starts from a cold keyframe the continuous
+# encode does not have, which can band on dark gradients. Cut: scdet score
+# above 5, not its default 10, which misses most cuts in dark films. Falls
+# back to the nearest keyframe, marked, when no cut is left.
 mapfile -t BOUNDS < <(awk -v n="$N" -v fps="${SLOT_FPS[*]}" -v total="$FRAMES" '
     FNR == NR { sc[$1] = $2; next }
     { split($0, a, "|"); f = FNR - 1; t[f] = a[1]
-      if (a[2] ~ /K/ && f > 0) { key[++k] = f; if (sc[f] > 10) cut[++c] = f } }
+      if (a[2] ~ /K/ && f > 0) { key[++k] = f; if (sc[f] > 5) cut[++c] = f } }
     END {
         split(fps, v, " "); for (i = 1; i <= n; i++) sum += v[i]
-        acc = 0
+        acc = 0; prev = 0
         for (i = 1; i < n; i++) {
-            acc += v[i]; want = total * acc / sum; best = ""; kind = "scene cut"
-            for (j = 1; j <= c; j++) if (best == "" || (cut[j] - want)^2 < (best - want)^2) best = cut[j]
-            if (best == "") { kind = "mid-scene"; for (j = 1; j <= k; j++) if (best == "" || (key[j] - want)^2 < (best - want)^2) best = key[j] }
+            acc += v[i]; want = total * acc / sum; best = ""; kind = "cut"
+            for (j = 1; j <= c; j++) if (cut[j] > prev && (best == "" || (cut[j] - want)^2 < (best - want)^2)) best = cut[j]
+            if (best == "") { kind = "mid-scene"; for (j = 1; j <= k; j++) if (key[j] > prev && (best == "" || (key[j] - want)^2 < (best - want)^2)) best = key[j] }
             printf "%d %s %s %.1f\n", best, t[best], kind, sc[best]
+            prev = best
         }
     }' "$SCENES" "$STATE/packets")
-starts=(0) times=()
-kinds=()
-for b in "${BOUNDS[@]}"; do read -r f t kind score <<<"$b"; starts+=("$f"); times+=("$t"); kinds+=("$kind ($score)"); done
+starts=(0) times=() kinds=()
+for b in "${BOUNDS[@]}"; do read -r f t kind score <<<"$b"; starts+=("$f"); times+=("$t"); kinds+=("$( [[ $kind == cut ]] && echo "scene cut" || echo "$kind") (score $score)"); done
 starts+=("$FRAMES")
 for ((i = 0; i < N; i++)); do
     frames=$((starts[i + 1] - starts[i]))
