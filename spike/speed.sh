@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 source lib/ui.sh
 source lib/util.sh
 source spike/hosts.sh
+source spike/bars.sh
 # The master runs the same pinned tools as the workers.
 command -v x265 >/dev/null || exec nix shell --quiet "$REF#tools" --command "$0" "$@"
 
@@ -71,56 +72,22 @@ rm -f out.hevc
 EOF
 }
 
-# Reads -progress lines into $STATE/<host>: "frame fps".
-follow() {
-    local host=$1 key value frame=0 fps=0
-    while IFS='=' read -r key value; do
-        case $key in
-            frame) frame=$value ;;
-            fps) fps=$value ;;
-            progress) echo "$frame $fps" >"$STATE/$host" ;;
-        esac
-    done
-}
-
-draw() {
-    local host frame fps status pct eta
-    (( ${DRAWN:-0} )) && printf '\e[%dA' "${#HOSTS[@]}"
-    for host in "${HOSTS[@]}"; do
-        read -r frame fps 2>/dev/null <"$STATE/$host" || { frame=0 fps=0; }
-        status=$(cat "$STATE/status-$host" 2>/dev/null || echo "starting")
-        read -r pct eta < <(awk -v f="$frame" -v t="$FRAMES" -v r="$fps" 'BEGIN {
-            printf "%.0f ", (t > 0 ? f / t * 100 : 0)
-            if (r > 0) { e = (t - f) / r; printf "%d:%02d", e / 60, e % 60 } else printf "—" }')
-        printf '\r\e[K  %-13s %s %3s%% · %6s fps · ETA %5s · %s\n' "$host" \
-            "$(bar "$(awk -v f="$frame" -v t="$FRAMES" 'BEGIN { print (t > 0 ? f / t : 0) }')" 20)" "$pct" "$fps" "$eta" "$status"
-    done
-    DRAWN=1
-}
-
 heading "Encode"
 for host in "${HOSTS[@]}"; do
     (
-        echo "encoding · ${WRAP[$host]}" >"$STATE/status-$host"
+        status "$host" encoding
         t=$(date +%s.%N)
         if job "${ASM[$host]}" | on "$host" 2>"$STATE/err-$host" > >(follow "$host"); then
             awk -v s="$t" -v e="$(date +%s.%N)" 'BEGIN { printf "%.1f\n", e - s }' >"$STATE/secs-$host"
-            echo "${GREEN}done${RESET}" >"$STATE/status-$host"
+            status "$host" "${GREEN}done${RESET}"
         else
-            echo "${RED}failed${RESET} (see below)" >"$STATE/status-$host"
+            status "$host" "${RED}failed${RESET}"
         fi
         touch "$STATE/end-$host"
     ) &
 done
-DRAWN=0
-while :; do
-    draw
-    left=0
-    for host in "${HOSTS[@]}"; do [[ -e $STATE/end-$host ]] || left=1; done
-    (( left )) || break
-    sleep 1
-done
-draw
+SLOTS=("${HOSTS[@]}")
+watch_slots
 for host in "${HOSTS[@]}"; do
     [[ -s $STATE/err-$host ]] && { warn "$host stderr:"; sed 's/^/      /' "$STATE/err-$host" | tail -5; }
 done
