@@ -1,5 +1,6 @@
 # Live progress bars, one per slot. Sourced by spike/*.sh after lib/ui.sh.
-# Needs SLOTS (names), FRAMES (total per slot) and STATE (a directory).
+# Needs SLOTS (names), STATE (a directory) and the frames per slot: in
+# $STATE/total-<slot>, else FRAMES.
 
 # Reads ffmpeg -progress lines on stdin into $STATE/<slot>: "frame fps".
 follow() {
@@ -17,16 +18,17 @@ follow() {
 status() { echo "$2" >"$STATE/status-$1"; }
 
 draw() {
-    local slot frame fps st pct eta
+    local slot frame fps st pct eta total
     (( ${DRAWN:-0} )) && printf '\e[%dA' "${#SLOTS[@]}"
     for slot in "${SLOTS[@]}"; do
         read -r frame fps 2>/dev/null <"$STATE/$slot" || { frame=0 fps=0; }
         st=$(cat "$STATE/status-$slot" 2>/dev/null || echo "starting")
-        read -r pct eta < <(awk -v f="$frame" -v t="$FRAMES" -v r="$fps" 'BEGIN {
+        total=$(cat "$STATE/total-$slot" 2>/dev/null || echo "$FRAMES")
+        read -r pct eta < <(awk -v f="$frame" -v t="$total" -v r="$fps" 'BEGIN {
             printf "%.0f ", (t > 0 ? f / t * 100 : 0)
             if (r > 0) { e = (t - f) / r; printf "%d:%02d", e / 60, e % 60 } else printf "—" }')
         printf '\r\e[K  %-14s %s %3s%% · %5s fps · ETA %5s · %s\n' "$slot" \
-            "$(bar "$(awk -v f="$frame" -v t="$FRAMES" 'BEGIN { print (t > 0 ? f / t : 0) }')" 20)" "$pct" "$fps" "$eta" "$st"
+            "$(bar "$(awk -v f="$frame" -v t="$total" 'BEGIN { print (t > 0 ? f / t : 0) }')" 20)" "$pct" "$fps" "$eta" "$st"
     done
     DRAWN=1
 }
