@@ -98,8 +98,8 @@ profile_settings() {
 
     VMAF_TARGET_MEAN=95
     VMAF_TARGET_LOW=90
-    # Worst frame. CAMBI ≈ 5 is where Netflix finds banding "slightly annoying";
-    # 2.5 stays clear of it on an OLED in a dark room.
+    # Worst half second. CAMBI ≈ 5 is where Netflix finds banding "slightly
+    # annoying"; 2.5 stays clear of it on an OLED in a dark room.
     CAMBI_MAX=2.5
     # A CRF step costing this many times the previous step's XPSNR is a knee.
     KNEE_RATIO=1.5

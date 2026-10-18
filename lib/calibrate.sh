@@ -39,14 +39,14 @@ plan_gates() {
     done
     setting "VMAF NEG" "mean ≥ $VMAF_TARGET_MEAN · 1%-low ≥ $VMAF_TARGET_LOW (pooled)"
     setting "Every scene" "1%-low ≥ $VMAF_TARGET_LOW"
-    setting "Banding" "CAMBI (vs source) ≤ $CAMBI_MAX on every frame"
+    setting "Banding" "CAMBI (vs source) ≤ $CAMBI_MAX in every half second"
     setting "Efficiency" "stop at an XPSNR knee (step > ${KNEE_RATIO}× previous)"
     (( ${#PRESET_NAMES[@]} == 1 )) ||
         setting "Preset choice" "fastest within $(awk -v t="$SIZE_TOLERANCE" 'BEGIN { print t * 100 }')% of the smallest file"
 }
 
 # Prints one row of the CRF table and appends it to CALIBRATED_ROWS.
-# Fields: crf neg 1%-low scene-1%-low cambi-worst-frame xpsnr Δxpsnr Mb/s est-bytes verdict;
+# Fields: crf neg 1%-low scene-1%-low cambi-worst-half-second xpsnr Δxpsnr Mb/s est-bytes verdict;
 # never empty, as reading the tab-separated row back collapses empty fields.
 row() {
     local IFS=$'\t'
@@ -83,7 +83,7 @@ print_table_header() {
 
 print_table_legend() {
     printf '  %sNEG, 1%%: pooled VMAF NEG mean and 1%%-low · scene: worst sample'"'"'s 1%%-low%s\n' "$DIM" "$RESET"
-    printf '  %sCAMBI: worst frame, banding added vs source · Δ: XPSNR lost vs previous CRF%s\n' "$DIM" "$RESET"
+    printf '  %sCAMBI: worst ½ s, banding added vs source · Δ: XPSNR lost vs previous CRF%s\n' "$DIM" "$RESET"
 }
 
 # Any change to the source, an encode setting, the encode or scoring filters,
@@ -326,15 +326,21 @@ aggregate_crf() {
     local preset=$1 crf=$2 n log frames bytes seconds xpsnr low cambi neg neg_low mbps xpsnr_mean est_bytes
     local enc_bytes=0 frames_total=0 xpsnr_weighted=0 scene_low=101 scene_at="" cambi_max=0 enc_seconds=0 w warnings=()
     local audio_bps=$(( $(stream_bps "$A") + ${STEREO_BITRATE%k} * 1000 ))
+    local window
+    window=$(awk -v r="$FPS" 'BEGIN { printf "%d", r / 2 + 0.5 }')
     for ((n = 0; n < CALIBRATION_SAMPLES; n++)); do
         log="$WORK/vmaf-$preset-$crf-$n.json"
         read -r frames bytes seconds xpsnr <"$WORK/result-$preset-$crf-$n"
         [[ $frames == "${SAMPLE_FRAMES[n]}" ]] || warnings+=("$preset CRF $crf sample $n: reference has ${SAMPLE_FRAMES[n]} frames, encode has $frames — scores may be misaligned.")
-        # CAMBI's worst frame, not its mean: a sample's mean stays low while a
-        # few dark frames band visibly.
-        read -r low cambi < <(jq -r '
+        # CAMBI's worst half second (the highest mean over any run of
+        # frames that long), not its mean, which stays low while a dark
+        # scene bands visibly, nor its worst frame: a single frame at a
+        # scene cut can score 3+ at any CRF, with VMAF near 100 there.
+        read -r low cambi < <(jq -r --argjson w "$window" '
             ([.frames[].metrics.vmaf] | sort) as $s
-            | "\($s[($s | length) / 100 | floor]) \(.pooled_metrics.cambi_full_reference.max)"' "$log")
+            | [.frames[].metrics.cambi_full_reference] as $c
+            | ([range(0; ($c | length) - $w + 1) as $i | $c[$i:$i + $w] | add / $w] | max // ($c | add / length)) as $cw
+            | "\($s[($s | length) / 100 | floor]) \($cw)"' "$log")
         if awk -v l="$low" -v w="$scene_low" 'BEGIN { exit !(l < w) }'; then
             scene_low=$low scene_at=$(hms "${SAMPLES_AT[n]}")
         fi

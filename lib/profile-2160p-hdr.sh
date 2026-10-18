@@ -218,8 +218,8 @@ profile_settings() {
 
     VMAF_TARGET_MEAN=95
     VMAF_TARGET_LOW=90
-    # Worst frame, as at 1080p: on Interstellar, eotf=pq scored within ~30% of
-    # eotf=bt1886, so the same limit applies.
+    # Worst half second, as at 1080p: on a test film, eotf=pq scored within
+    # ~30% of eotf=bt1886, so the same limit applies.
     CAMBI_MAX=2.5
     # A CRF step costing this many times the previous step's XPSNR is a knee.
     KNEE_RATIO=1.5
