@@ -193,7 +193,7 @@ profile_settings() {
     if [[ -n $DV_PROFILE ]]; then
         item "Dolby Vision profile $DV_PROFILE → 8.1 (BL = HDR10, compatibility ID 1)"
         setting "RPU" "${DOVI_EXTRACT[*]}"
-        setting "Injection" "ffmpeg (decode${CROP:+, crop}) | x265 CLI --dolby-vision-profile 8.1"
+        setting "Injection" "${DV_INJECTION:-ffmpeg (decode${CROP:+, crop}) | x265 CLI --dolby-vision-profile 8.1}"
         setting "Mux" "mkvmerge (writes the Dolby Vision configuration)"
     fi
     [[ -n $HAS_HDR10PLUS ]] && item "HDR10+ dropped"

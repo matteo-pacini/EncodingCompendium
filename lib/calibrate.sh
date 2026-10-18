@@ -71,10 +71,10 @@ print_row() {
         printf '  %s%s%s%s\n' "$(cell 4 "$1") " "$DIM" "${10}" "$RESET"
         return
     fi
-    local colour=$RED
+    local colour=$RED verdict=${10/#fail: /✖ }
     [[ ${10} == pass ]] && colour=$GREEN
     printf '  %s %s%s%s\n' "$(table_cells "$1" "$(printf '%.2f' "$2")" "$(printf '%.2f' "$3")" "$(printf '%.2f' "$4")" \
-        "$(printf '%.2f' "$5")" "$(printf '%.2f' "$6")" "$7" "$8" "$(human_bytes "$9")")" "$colour" "${10}" "$RESET"
+        "$(printf '%.2f' "$5")" "$(printf '%.2f' "$6")" "$7" "$8" "$(human_bytes "$9")")" "$colour" "$verdict" "$RESET"
 }
 
 print_table_header() {
@@ -522,7 +522,8 @@ run_calibration() {
                     "$(full_encode_hours "${RES_FPS[$preset]}")" "$RESET" \
                     "$([[ -z ${RES_STOPPED[$preset]} ]] && echo " $YELLOW(limit not reached)$RESET")"
             else
-                printf '    %-9s %sno CRF passes%s\n' "$preset" "$RED" "$RESET"
+                printf '    %-9s %sno CRF passes%s (CRF %s: %s)\n' "$preset" "$RED" "$RESET" "${RES_STOPPED[$preset]}" \
+                    "$(awk -F'\t' -v c="${RES_STOPPED[$preset]}" '$1 == c { sub(/^fail: /, "", $10); print $10 }' <<<"${RES_ROWS[$preset]}")"
             fi
             if [[ -n ${RES_SIZE[$preset]} && -z ${RES_STOPPED[$preset]} ]]; then
                 unbounded+=("$preset")

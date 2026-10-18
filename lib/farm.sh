@@ -236,11 +236,41 @@ EOF
     [[ -s $FARM/jobs/$key.result ]] || { echo "no result line" >&2; return 1; }
     slot_get "$i" "vmaf-$preset-$crf-$n.json" "$WORK/vmaf-$preset-$crf-$n.json" || return
     cp "$FARM/jobs/$key.result" "$WORK/result-$preset-$crf-$n"
+    echo "$i $preset $crf $n" >>"$FARM/samples-by-slot"
 }
 
 calibration_total() {
+    local i ahead=0
+    for i in "${!SLOT_HOST[@]}"; do
+        [[ -n ${SLOT_JOB[i]:-} && -n ${FARM_IS_EXTRA[${SLOT_JOB[i]}]:-} ]] && ahead=$((ahead + 1))
+    done
     printf 'Calibration · %d/%d samples' "$FARM_DONE" "${#FARM_QUEUE[@]}"
     (( FARM_AHEAD == 0 )) || printf ' · %d ahead' "$FARM_AHEAD"
+    (( FARM_DONE < ${#FARM_QUEUE[@]} || ahead == 0 )) || printf ' · finishing %d ahead' "$ahead"
+}
+
+# Per slot, the samples it measured this run and its encode speed per
+# preset (frames over encode seconds, scoring left out).
+calibration_slots() {
+    local i preset line
+    [[ -s $FARM/samples-by-slot ]] || return 0
+    heading "Slots  ${DIM}calibration encode speed${RESET}"
+    printf '  %s%-14s %7s' "$DIM" slot samples
+    for preset in "${PRESET_NAMES[@]}"; do printf ' %9s' "$preset"; done
+    printf ' %6s%s\n' share "$RESET"
+    for i in "${!SLOT_HOST[@]}"; do
+        line=$(while read -r s p c n; do
+            if [[ $s == "$i" ]]; then echo "$p $(cat "$WORK/result-$p-$c-$n")"; fi
+        done <"$FARM/samples-by-slot" | awk -v presets="${PRESET_NAMES[*]}" -v all="$(wc -l <"$FARM/samples-by-slot")" '
+            { n++; f[$1] += $2; t[$1] += $4 }
+            END {
+                printf "%7d", n
+                k = split(presets, p, " ")
+                for (j = 1; j <= k; j++) printf " %9s", (t[p[j]] > 0 ? sprintf("%.2f fps", f[p[j]] / t[p[j]]) : "—")
+                printf " %5.0f%%", (all > 0 ? n / all * 100 : 0)
+            }')
+        printf '  %-14s %s\n' "${SLOT_NAME[i]}" "$line"
+    done
 }
 
 # Whether sample $3 of preset $1 at CRF $2 is measured (here or ahead).
@@ -298,8 +328,8 @@ farm_calibrate() {
                 sample_done "${p%@*}" "${p#*@}" "$n" || FARM_EXTRA+=("sample:${p%@*}:${p#*@}:$n")
             done
         done
-        farm_event "${BOLD}Round $rounds${RESET} · $(printf '%s ' "${round[@]//@/ CRF }")· ${#FARM_QUEUE[@]} samples$(
-            (( ${#ahead[@]} > 0 )) && echo " · idle slots ahead on $(printf '%s ' "${ahead[@]//@/ CRF }")")"
+        farm_event "${BOLD}Round $rounds${RESET} · $(IFS=,; echo "${round[*]//@/ }" | sed 's/,/, /g') · ${#FARM_QUEUE[@]} samples$(
+            (( ${#ahead[@]} > 0 )) && echo " · ahead: $(IFS=,; echo "${ahead[*]//@/ }" | sed 's/,/, /g')")"
         FARM_TOTAL=calibration_total
         (( ${#FARM_QUEUE[@]} == 0 )) || farm_schedule
         for p in "${round[@]}"; do
@@ -309,7 +339,9 @@ farm_calibrate() {
         save_analysis
     done
     (( rounds > 0 )) || return 0
-    farm_event "$DIM(the tables below are read back from $(basename "$ANALYSIS"))$RESET"
+    calibration_slots
+    echo
+    printf '  %s(the tables below are read back from %s)%s\n' "$DIM" "$(basename "$ANALYSIS")" "$RESET"
 }
 
 ###############################################################################
@@ -399,7 +431,7 @@ split_chunks() {
 # VBV buffer back at 90%, the fullness the next one starts from. Without
 # the RPU: Dolby Vision goes in once the chunks are joined.
 farm_job_chunk() {
-    local i=$1 k=$2 name frames cli=() arg skip="" end="" got
+    local i=$1 k=$2 name frames cli=() arg skip="" end="" got t0
     name=$(printf 'chunk-%03d' "$k")
     frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
     farm_label "$i" "chunk $((k + 1))/$CHUNKS" "$frames"
@@ -412,6 +444,7 @@ farm_job_chunk() {
     [[ -n ${SLOT_POOLS[i]} ]] && cli+=(--pools "${SLOT_POOLS[i]}")
     (( k < CHUNKS - 1 )) && end="--vbv-end 0.9"
     slot_put "$i" "$PARTS/$name.mkv" "$name.mkv" || return
+    t0=$EPOCHSECONDS
     slot_run "$i" "$(cat <<EOF
 set -euo pipefail
 echo step=encode
@@ -427,7 +460,22 @@ EOF
     slot_rm "$i" "$name.mkv"
     got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.hevc" | wc -l)
     (( got == frames )) || { rm -f "$PARTS/$name.hevc"; echo "$name.hevc has $got frames, not $frames" >&2; return 1; }
-    echo "$k $frames" >>"$FARM/video-done"
+    echo "$k $frames $i $((EPOCHSECONDS - t0))" >>"$FARM/video-done"
+}
+
+# Per slot, after the encode: its chunks, frames, speed and share.
+video_slots() {
+    local i chunks
+    heading "Slots  ${DIM}chunks encoded${RESET}"
+    printf '  %s%-14s %7s %9s %6s  %s%s\n' "$DIM" slot frames speed share chunks "$RESET"
+    for i in "${!SLOT_HOST[@]}"; do
+        mapfile -t chunks < <(awk -v s="$i" '$3 == s { print $1 + 1 }' "$FARM/video-done")
+        awk -v s="$i" -v total="$CHUNK_FRAMES_TOTAL" -v name="${SLOT_NAME[i]}" '
+            $3 == s { f += $2; t += $4 }
+            END { printf "  %-14s %7d %9s %5.0f%%  ", name, f, (t > 0 ? sprintf("%.2f fps", f / t) : "—"), f / total * 100 }' \
+            "$FARM/video-done"
+        wrap_text 51 "${chunks[*]:+$(ranges "${chunks[@]}")}"
+    done
 }
 
 video_total() {
@@ -495,6 +543,7 @@ farm_encode_video() {
     farm_schedule
     ENCODE_SECONDS=$((SECONDS - ENCODE_START))
     ok "$CHUNKS chunks in $(hms "$ENCODE_SECONDS") · $(awk -v f="$CHUNK_FRAMES_TOTAL" -v s="$ENCODE_SECONDS" 'BEGIN { printf "%.2f", f / s }') fps"
+    video_slots
     progress "Joining the chunks…"
     : >"$VIDEO_HEVC"
     for ((k = 0; k < CHUNKS; k++)); do

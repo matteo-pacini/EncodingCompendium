@@ -66,6 +66,8 @@ profile_analysis
 section "2 · Proposed conversion — $PROFILE_TARGET"
 ###############################################################################
 
+# Chunks are encoded without the RPU, which goes into the joined stream.
+DV_INJECTION="dovi_tool inject-rpu into the joined chunks"
 profile_settings
 
 heading "Hosts  ${DIM}${#SLOT_HOST[@]} slots${RESET}"
