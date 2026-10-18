@@ -41,7 +41,7 @@ Slower presets / higher CRF are not worth pursuing, as the encoding time inflate
 
 ### Encoding 1080p Remux to 1080p HEVC-10bit
 
-Check the [script](https://github.com/Zi0P4tch0/EncodingCompendium/blob/master/x265-10bit.sh) in the repo.
+Check the [script](https://github.com/Zi0P4tch0/EncodingCompendium/blob/master/hevc-1080p-sdr.sh) in the repo.
 
 - Encodes the video track to HEVC 10-bit (SDR).
 - Auto-crops the video.

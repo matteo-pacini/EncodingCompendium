@@ -1,0 +1,229 @@
+# Output naming, track metadata, global tags, finalising the encoded file
+# and the section 5 result checks. Sourced by the hevc-*.sh entry scripts.
+
+RELEASE_GROUP="Zi0P4tch0"
+ORIGINAL_MEDIA_TYPE="Blu-ray"
+
+# Sets OUTPUT and MOVIE_TITLE from INPUT and prints the section 2 container
+# plan. An entry script may define `rename_stem <stem>` to rewrite further
+# parts of the output name.
+plan_container() {
+    local stem
+    stem=$(basename "${INPUT%.*}")
+    # Radarr/Sonarr read "Remux-1080p" as a quality; an encode of one is "Bluray-1080p".
+    stem=${stem//Remux/Bluray}
+    # A source release group after the last bracket ("…[h265]-Group") gives
+    # way to ours.
+    [[ $stem =~ ^(.*\])-[^][\ -]+$ ]] && stem=${BASH_REMATCH[1]}
+    declare -F rename_stem >/dev/null && stem=$(rename_stem "$stem")
+    OUTPUT="$(dirname "$INPUT")/$stem-$RELEASE_GROUP.mkv"
+    # "Title (Year)" from Radarr-style names, else the whole name.
+    MOVIE_TITLE=$(basename "${INPUT%.*}")
+    [[ $MOVIE_TITLE =~ ^(.*\([0-9]{4}\)) ]] && MOVIE_TITLE=${BASH_REMATCH[1]}
+
+    heading "Subtitles"
+    if (( ${#SUB_STREAMS[@]} == 0 )); then
+        item "None to carry over"
+    else
+        item "All ${#SUB_STREAMS[@]} track(s) copied · default flag cleared"
+    fi
+
+    heading "Container & metadata"
+    item "Matroska · chapters copied · metadata rebuilt"
+    setting "Title" "$MOVIE_TITLE"
+    setting "Track tags" "source tags dropped; language + title set per track"
+    setting "Global tags" "encoder settings, calibration, source identity"
+    setting "Statistics" "regenerated with mkvpropedit"
+    (( ${#COVER_STREAMS[@]} == 0 )) || setting "Cover art" "${#COVER_STREAMS[@]} attached picture(s) kept"
+    [[ -n $FIX_V_LANG ]] && setting "Video language" "$V_LANG → $FIX_V_LANG"
+
+    kv "Output" "$(basename "$OUTPUT")"
+}
+
+# Builds TAGS (global Matroska tags) from the calibration result, followed by
+# any EXTRA_TAGS from the entry script, and prints the output plan. Exits if
+# the output already exists.
+plan_output() {
+    local r fields tag
+    # Calibration results go in their own tags, not COMMENT/DESCRIPTION, which
+    # media servers may show as the overview.
+    for r in "${ROWS[@]}"; do
+        IFS=$'\t' read -r -a fields <<<"$r"
+        [[ ${fields[0]} == "$SELECTED_CRF" ]] && break
+    done
+    TAGS=(
+        "TITLE=$MOVIE_TITLE"
+        "ENCODED_BY=$RELEASE_GROUP"
+        "ORIGINAL_MEDIA_TYPE=$ORIGINAL_MEDIA_TYPE"
+        "ENCODER_SETTINGS=libx265 preset=$PRESET crf=$SELECTED_CRF $X265_PARAMS"
+        "CALIBRATION_DATE=$ANALYSIS_CREATED"
+        "CALIBRATION_SAMPLES=$CALIBRATION_SAMPLES × $SAMPLE_DURATION s ($SAMPLE_PERCENT% of the film)"
+        "CALIBRATION_VMAF_NEG_MEAN=$(printf '%.2f' "${fields[1]}")"
+        "CALIBRATION_VMAF_NEG_1PCT_LOW=$(printf '%.2f' "${fields[2]}")"
+        "CALIBRATION_CAMBI_MAX=$(printf '%.3f' "${fields[4]}")"
+        "CALIBRATION_XPSNR_Y=${fields[5]}"
+        "CALIBRATION_STEREO_GAIN_DB=$GAIN"
+        "SOURCE_FILENAME=$(basename "$INPUT")"
+        "SOURCE_SIZE=$(probe .format.size)"
+        "SOURCE_SHA256=$SOURCE_SHA256"
+        "${EXTRA_TAGS[@]}"
+    )
+
+    heading "Output"
+    kv "File" "$OUTPUT"
+    [[ -e $OUTPUT ]] && warn "Output file already exists"
+    for tag in "${TAGS[@]}"; do
+        printf '      %s%-30s%s %s\n' "$DIM" "${tag%%=*}" "$RESET" "${tag#*=}"
+    done
+
+    [[ -e $OUTPUT ]] && die "$OUTPUT already exists — move it away first"
+    return 0
+}
+
+# Asks before encoding, unless this is a dry run.
+confirm_encode() {
+    local answer
+    [[ -n $DRY_RUN ]] && return 0
+    echo
+    [[ -t 0 ]] || die "Not a terminal — cannot ask whether to continue"
+    read -r -p "  ${BOLD}Continue with the full encode at $PRESET · CRF $SELECTED_CRF? [y/N]${RESET} " answer
+    [[ $answer == [yY]* ]] || { echo "  Aborted."; exit 0; }
+}
+
+# Writes TAGS as a Matroska tags XML file for `mkvpropedit --tags global:FILE`.
+write_tags_xml() {
+    local tag name value
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<!DOCTYPE Tags SYSTEM "matroskatags.dtd">'
+        echo '<Tags><Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets>'
+        for tag in "${TAGS[@]}" "DATE_ENCODED=$(date -u '+%Y-%m-%d')"; do
+            name=${tag%%=*} value=${tag#*=}
+            # Quoted replacements: bash 5.2+ expands a bare & to the match.
+            value=${value//&/"&amp;"} value=${value//</"&lt;"} value=${value//>/"&gt;"}
+            printf '<Simple><Name>%s</Name><String>%s</String></Simple>\n' "$name" "$value"
+        done
+        echo '</Tag></Tags>'
+    } >"$1"
+}
+
+# Sets PARTIAL_FILE, V_OUT_LANG, A_TITLE and TOTAL_FRAMES, and writes the
+# tags XML into WORK.
+prepare_output() {
+    A_TITLE="$(probe ".streams[$A].profile // .streams[$A].codec_name" | tr '[:lower:]' '[:upper:]') ${A_LAYOUT%%(*}"
+    V_OUT_LANG=${FIX_V_LANG:-${V_LANG:-und}}
+    PARTIAL_FILE="${OUTPUT%.mkv}.partial.mkv"
+    TAGS_XML="$WORK/tags.xml"
+    write_tags_xml "$TAGS_XML"
+    COVER_ARGS=()
+    # From duration × frame rate, not the NUMBER_OF_FRAMES tag: remuxers can
+    # carry that tag over unchanged from a longer source.
+    TOTAL_FRAMES=$(awk -v d="$DURATION" -v r="$FPS" 'BEGIN { printf "%.0f", d * r }')
+}
+
+# Sets MAPS and STREAM_OPTS (ffmpeg) for: video, stereo AAC, the original
+# audio copied, and every subtitle; registers PARTIAL_FILE for cleanup; and
+# extracts cover art into WORK for finalize_output.
+prepare_ffmpeg_mux() {
+    local i s sub_lang sub_title sub_disposition c name mime
+
+    MAPS=(-map 0:"$V" -map 0:"$A" -map 0:"$A")
+    STREAM_OPTS=(
+        -metadata:s:v:0 "language=$V_OUT_LANG" -metadata:s:v:0 "title=HEVC Main10 · CRF $SELECTED_CRF"
+        -metadata:s:a:0 "language=$A_LANG" -metadata:s:a:0 "title=Stereo · AAC $STEREO_BITRATE"
+        -metadata:s:a:1 "language=$A_LANG" -metadata:s:a:1 "title=$A_TITLE"
+        -disposition:v:0 default -disposition:a:0 default -disposition:a:1 0
+    )
+    for i in "${!SUB_STREAMS[@]}"; do
+        s=${SUB_STREAMS[i]}
+        MAPS+=(-map 0:"$s")
+        sub_lang=$(probe ".streams[$s].tags.language")
+        sub_title=$(probe ".streams[$s].tags.title")
+        # Default is cleared so no subtitle is auto-selected; forced is kept.
+        sub_disposition=0
+        [[ $(probe ".streams[$s].disposition.forced") == 1 ]] && sub_disposition=forced
+        STREAM_OPTS+=(-metadata:s:s:"$i" "language=${sub_lang:-und}" -disposition:s:"$i" "$sub_disposition")
+        [[ -n $sub_title ]] && STREAM_OPTS+=(-metadata:s:s:"$i" "title=$sub_title")
+    done
+
+    # Registered for cleanup only when this run actually writes it.
+    [[ -n $DRY_RUN ]] || PARTIAL=$PARTIAL_FILE
+
+    # Cover art is added back as Matroska attachments by mkvpropedit, which
+    # keeps it out of the ffmpeg stream mapping (-c:v would re-encode it).
+    for c in "${COVER_STREAMS[@]}"; do
+        name=$(probe ".streams[$c].tags.filename // \"cover-$c.$(probe ".streams[$c].codec_name")\"")
+        mime=$(probe ".streams[$c].tags.mimetype // \"image/$(probe ".streams[$c].codec_name")\"")
+        ffmpeg -nostdin -v error -y -i "$INPUT" -map 0:"$c" -c copy -f image2 "$WORK/$name"
+        COVER_ARGS+=(--attachment-name "$name" --attachment-mime-type "$mime" --add-attachment "$WORK/$name")
+    done
+}
+
+# Sets the segment title, global tags, cover art and fresh track statistics
+# on PARTIAL_FILE, then moves it to OUTPUT.
+finalize_output() {
+    run mkvpropedit -q "$PARTIAL_FILE" --edit info --set "title=$MOVIE_TITLE" --tags global:"$TAGS_XML" \
+        "${COVER_ARGS[@]}" --add-track-statistics-tags
+    run mv "$PARTIAL_FILE" "$OUTPUT"
+
+    if [[ -n $DRY_RUN ]]; then
+        heading "Tags XML  ${DIM}($TAGS_XML, deleted on exit)${RESET}"
+        sed 's/^/  /' "$TAGS_XML"
+        exit 0
+    fi
+    PARTIAL=""
+}
+
+# ✔ on a match; otherwise a warning showing both values.
+check() {
+    local label=$1 expected=$2 actual=$3
+    if [[ $expected == "$actual" ]]; then
+        ok "$label"
+    else
+        warn "$label — expected $expected, got ${actual:-nothing}"
+    fi
+}
+
+# As check, for numbers that may differ by up to the given tolerance.
+check_near() {
+    local label=$1 expected=$2 actual=$3 tolerance=$4
+    if awk -v e="$expected" -v a="$actual" -v t="$tolerance" 'BEGIN { d = e - a; exit !(a != "" && (d < 0 ? -d : d) <= t) }'; then
+        ok "$label"
+    else
+        warn "$label — expected $expected (±$tolerance), got ${actual:-nothing}"
+    fi
+}
+
+out_probe() { jq -r "$1 // empty" <<<"$OUT_PROBE"; }
+
+# Section 5: gains and checks common to every output; the entry script adds
+# its own checks afterwards (out_probe works on the output).
+report_result() {
+    local src_size out_size out_frames
+    section "5 · Result — $(basename "$OUTPUT")"
+
+    OUT_PROBE=$(ffprobe -v error -show_format -show_streams -show_chapters -of json "$OUTPUT")
+    src_size=$(probe .format.size)
+    out_size=$(out_probe .format.size)
+    out_frames=$(out_probe '.streams[0].tags.NUMBER_OF_FRAMES')
+
+    heading "Gains"
+    kv "Size" "$(human_bytes "$out_size")  (source $(human_bytes "$src_size"))"
+    kv "Saved" "$(human_bytes $((src_size - out_size))) · $(awk -v s="$src_size" -v o="$out_size" 'BEGIN { printf "%.0f%% smaller · %.1f:1", (1 - o / s) * 100, s / o }')"
+    kv "vs estimate" "$(human_bytes "$SELECTED_SIZE") predicted · actual $(awk -v e="$SELECTED_SIZE" -v o="$out_size" 'BEGIN { printf "%+.1f%%", (o / e - 1) * 100 }')"
+    kv "Video bitrate" "$(kbps "$(out_probe '.streams[0].tags.BPS')")  (source $(kbps "$(stream_bps "$V")"))"
+    kv "Encode time" "$(hms "$ENCODE_SECONDS") · $(awk -v f="$out_frames" -v t="$ENCODE_SECONDS" 'BEGIN { printf "%.1f fps", (t > 0 ? f / t : 0) }')"
+
+    heading "Checks"
+    # Container durations round to the millisecond and the last frame's length,
+    # so allow a couple of frames either way.
+    check_near "Frame count" "$TOTAL_FRAMES" "$out_frames" 2
+    check_near "Duration (s)" "$(printf '%.2f' "$DURATION")" "$(printf '%.2f' "$(out_probe .format.duration)")" 0.2
+    check "Video" "hevc Main 10 ${CROP_W}x${CROP_H}" "$(out_probe '.streams[0] | "\(.codec_name) \(.profile) \(.width)x\(.height)"')"
+    check "Audio" "aac stereo default · $(probe ".streams[$A].codec_name") $A_LAYOUT" \
+        "$(out_probe '[.streams[] | select(.codec_type == "audio")] | "\(.[0].codec_name) \(.[0].channel_layout) \(if .[0].disposition.default == 1 then "default" else "not default" end) · \(.[1].codec_name) \(.[1].channel_layout)"')"
+    check "Subtitles" "${#SUB_STREAMS[@]}" "$(out_probe '[.streams[] | select(.codec_type == "subtitle")] | length')"
+    check "Chapters" "$(probe '.chapters | length')" "$(out_probe '.chapters | length')"
+    check "Cover art" "${#COVER_STREAMS[@]}" "$(out_probe '[.streams[] | select(.disposition.attached_pic == 1)] | length')"
+    check "Source hash tag" "$SOURCE_SHA256" "$(out_probe .format.tags.SOURCE_SHA256)"
+}
