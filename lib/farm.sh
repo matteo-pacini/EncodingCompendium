@@ -283,7 +283,7 @@ sample_done() { [[ -s $WORK/result-$1-$2-$3 && -s $WORK/vmaf-$1-$2-$3.json ]]; }
 # kept for the next round. run_calibration then finds everything stored.
 farm_calibrate() {
     local i n preset crf p rounds=0 created neg neg_low scene_low scene_at cambi xpsnr step failed after
-    declare -A next=() stopped=() prev_xpsnr=() prev_step=()
+    declare -A next=() stopped=() prev_xpsnr=() prev_step=() prev_cambi=()
     ANALYSIS="${INPUT%.*}.analysis"
     load_analysis
     for i in "${!PRESET_NAMES[@]}"; do check_fingerprint "${PRESET_NAMES[i]}"; done
@@ -306,8 +306,8 @@ farm_calibrate() {
                 # Stored: judged now, exactly as walk_preset will.
                 IFS=$'\t' read -r created neg neg_low scene_low scene_at cambi xpsnr _ <<<"${CACHE[$preset@$crf]}"
                 step=$( [[ -n ${prev_xpsnr[$preset]:-} ]] && awk -v p="${prev_xpsnr[$preset]}" -v x="$xpsnr" 'BEGIN { printf "%.2f", p - x }' || true)
-                failed=$(crf_verdict "$neg" "$neg_low" "$scene_low" "$cambi" "$step" "${prev_step[$preset]:-}")
-                prev_xpsnr[$preset]=$xpsnr prev_step[$preset]=$step
+                failed=$(crf_verdict "$neg" "$neg_low" "$scene_low" "$cambi" "${prev_cambi[$preset]:-}" "$step" "${prev_step[$preset]:-}")
+                prev_xpsnr[$preset]=$xpsnr prev_step[$preset]=$step prev_cambi[$preset]=$cambi
                 next[$preset]=$(( ${next[$preset]:-0} + 1 ))
                 [[ -n $failed ]] && { stopped[$preset]=$crf; break; }
             done

@@ -29,6 +29,14 @@ sample_count() {
 # A slower preset is only worth it for a file this much smaller.
 SIZE_TOLERANCE=0.10
 
+# A CRF step that multiplies CAMBI's worst half second by CAMBI_JUMP, to
+# CAMBI_JUMP_FROM or more, is where banding sets in: the walk stops there,
+# under CAMBI_MAX. The samples miss most of a film's dark gradients, where
+# whole-film CAMBI has come out about 3× the calibrated value, so CAMBI_MAX
+# alone stops the walk too late.
+CAMBI_JUMP=2
+CAMBI_JUMP_FROM=1
+
 # Prints the section 2 summary of the gates.
 plan_gates() {
     local i
@@ -40,6 +48,7 @@ plan_gates() {
     setting "VMAF NEG" "mean ≥ $VMAF_TARGET_MEAN · 1%-low ≥ $VMAF_TARGET_LOW (pooled)"
     setting "Every scene" "1%-low ≥ $VMAF_TARGET_LOW"
     setting "Banding" "CAMBI (vs source) ≤ $CAMBI_MAX in every half second"
+    setting "Banding onset" "stop where a step takes CAMBI ×$CAMBI_JUMP, to ≥ $CAMBI_JUMP_FROM"
     setting "Efficiency" "stop at an XPSNR knee (step > ${KNEE_RATIO}× previous)"
     [[ -z $SCORE ]] || setting "Whole film" "scored after the encode · FULL_* tags"
     (( ${#PRESET_NAMES[@]} == 1 )) ||
@@ -366,14 +375,17 @@ aggregate_crf() {
         "$cambi_max" "$xpsnr_mean" "$mbps" "$est_bytes" "$frames_total" "$enc_seconds")
 }
 
-# Prints the first gate a CRF fails (mean, 1%-low, scene, banding, knee), or
-# nothing when it passes: `crf_verdict <neg> <1%-low> <scene 1%-low> <cambi>
-# <xpsnr step> <previous step>`, the steps empty for the walk's first CRF.
+# Prints the first gate a CRF fails (mean, 1%-low, scene, banding, CAMBI
+# jump, knee), or nothing when it passes: `crf_verdict <neg> <1%-low>
+# <scene 1%-low> <cambi> <previous cambi> <xpsnr step> <previous step>`,
+# the previous CRF's values empty for the walk's first CRF.
 crf_verdict() {
-    awk -v m="$1" -v l="$2" -v sl="$3" -v c="$4" -v st="$5" -v ps="$6" \
-        -v tm="$VMAF_TARGET_MEAN" -v tl="$VMAF_TARGET_LOW" -v cx="$CAMBI_MAX" -v k="$KNEE_RATIO" 'BEGIN {
+    awk -v m="$1" -v l="$2" -v sl="$3" -v c="$4" -v pc="$5" -v st="$6" -v ps="$7" \
+        -v tm="$VMAF_TARGET_MEAN" -v tl="$VMAF_TARGET_LOW" -v cx="$CAMBI_MAX" -v k="$KNEE_RATIO" \
+        -v cj="$CAMBI_JUMP" -v cf="$CAMBI_JUMP_FROM" 'BEGIN {
             if (m < tm) print "mean"; else if (l < tl) print "1%-low"; else if (sl < tl) print "scene"
-            else if (c > cx) print "banding"; else if (ps != "" && ps > 0 && st > k * ps) print "knee" }'
+            else if (c > cx) print "banding"; else if (pc != "" && c >= cf && c >= cj * pc) print "CAMBI ×" cj
+            else if (ps != "" && ps > 0 && st > k * ps) print "knee" }'
 }
 
 # Walks one preset's CRFs (`walk_preset <preset> <crf list>`), lowest first,
@@ -381,7 +393,7 @@ crf_verdict() {
 # gates; prints the table and sets the RES_* entries for the preset.
 walk_preset() {
     local preset=$1 crf created neg neg_low scene_low scene_at cambi xpsnr mbps est_bytes frames seconds
-    local step failed verdict prev_xpsnr="" prev_step="" stopped="" chosen="" chosen_size="" newest=""
+    local step failed verdict prev_xpsnr="" prev_step="" prev_cambi="" stopped="" chosen="" chosen_size="" newest=""
     local best_scene_low=101 best_scene_at="" frames_all=0 seconds_all=0 reused=()
     CALIBRATED_ROWS=()
 
@@ -402,7 +414,7 @@ walk_preset() {
         seconds_all=$(awk -v a="$seconds_all" -v b="$seconds" 'BEGIN { print a + b }')
         step=$( [[ -n $prev_xpsnr ]] && awk -v p="$prev_xpsnr" -v x="$xpsnr" 'BEGIN { printf "%.2f", p - x }' || true)
 
-        failed=$(crf_verdict "$neg" "$neg_low" "$scene_low" "$cambi" "$step" "$prev_step")
+        failed=$(crf_verdict "$neg" "$neg_low" "$scene_low" "$cambi" "$prev_cambi" "$step" "$prev_step")
         if [[ -z $failed ]]; then
             verdict="pass"
             chosen=$crf chosen_size=$est_bytes
@@ -412,7 +424,7 @@ walk_preset() {
             stopped=$crf
         fi
         row "$crf" "$neg" "$neg_low" "$scene_low" "$cambi" "$xpsnr" "${step:-—}" "$mbps" "$est_bytes" "$verdict"
-        prev_xpsnr=$xpsnr prev_step=$step
+        prev_xpsnr=$xpsnr prev_step=$step prev_cambi=$cambi
     done
     (( ${#reused[@]} == 0 )) ||
         printf '  %sCRF %s from %s%s\n' "$DIM" "$(IFS=,; echo "${reused[*]}" | sed 's/,/, /g')" "$(basename "$ANALYSIS")" "$RESET"
