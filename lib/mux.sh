@@ -124,9 +124,29 @@ prepare_output() {
     V_OUT_LANG=${FIX_V_LANG:-${V_LANG:-und}}
     TAGS_XML="$WORK/tags.xml"
     write_tags_xml "$TAGS_XML"
-    # From duration × frame rate, not the NUMBER_OF_FRAMES tag: remuxers can
-    # carry that tag over unchanged from a longer source.
-    TOTAL_FRAMES=$(awk -v d="$DURATION" -v r="$FPS" 'BEGIN { printf "%.0f", d * r }')
+    TOTAL_FRAMES=$(video_frames)
+}
+
+# The video's frames, from the span of its own timestamps: not the
+# container's duration, its longest stream's (subtitles or audio can run on
+# past the video), nor the NUMBER_OF_FRAMES tag, which remuxers can carry
+# over unchanged from a longer source. Reads the first 10 s and the last
+# 10 min; a video ending earlier than that is counted packet by packet.
+video_frames() {
+    local tail span
+    tail=$(awk -v d="$DURATION" 'BEGIN { printf "%.3f", (d > 600 ? d - 600 : 0) }')
+    span=$({
+        ffprobe -v error -select_streams "$V" -read_intervals "%+10" -show_entries packet=pts_time -of csv=p=0 "$INPUT"
+        ffprobe -v error -select_streams "$V" -read_intervals "$tail%" -show_entries packet=pts_time -of csv=p=0 "$INPUT"
+    } | awk -F, -v t="$tail" '$1 != "N/A" { if (s == "" || $1 < s) s = $1; if ($1 > e) e = $1 }
+        END { if (e > t) print e - s }')
+    # First to last frame, counted from the first: a packet duration would
+    # add its own millisecond rounding.
+    if [[ -n $span ]]; then
+        awk -v t="$span" -v r="$FPS" 'BEGIN { printf "%.0f", t * r + 1 }'
+    else
+        ffprobe -v error -select_streams "$V" -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$INPUT" | tr -d ,
+    fi
 }
 
 # Sets the segment title, global tags and fresh track statistics on
