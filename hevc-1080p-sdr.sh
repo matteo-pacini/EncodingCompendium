@@ -4,12 +4,18 @@
 # NVIDIA Shield TV Pro can direct-play (no video or audio transcoding on the
 # Shield or on a media server).
 #
-# Usage: hevc-1080p-sdr.sh [--dry-run] [--score] <input.mkv>
+# Usage: hevc-1080p-sdr.sh [--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>
 #
 #   --dry-run  print the encode commands instead of running them
 #   --score    score the whole output against the source after the encode
 #              (VMAF NEG, CAMBI, XPSNR) and store the result in its tags
 #              and the .analysis
+#   --yes      encode without asking, once calibrated
+#   --start-at wait until then to start: anything `date -d` reads; a time
+#              of day alone ("23:00") is its next occurrence
+#
+# Everything for the film goes in a folder named after it ("Title (Year)")
+# beside the input: the output, the worst sample and the .analysis.
 #
 # PRESETS (environment) lists the x265 presets and CRFs to calibrate, as
 # "preset:crf,crf,…;preset:crf,…" (default "slow:18,19,20"); section 3 walks each
@@ -31,6 +37,7 @@ for lib in ui util requirements probe audio calibrate mux score parts profile-10
 done
 
 parse_args "$@"
+wait_for_start
 profile_defaults
 
 ###############################################################################

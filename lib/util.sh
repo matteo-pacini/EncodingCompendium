@@ -5,21 +5,52 @@ hms() { awk -v s="$1" 'BEGIN { printf "%d:%02d:%02d", s / 3600, (s % 3600) / 60,
 human_bytes() { awk -v b="$1" 'BEGIN { split("B KiB MiB GiB TiB", u); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ } printf "%.2f %s", b, u[i] }'; }
 kbps() { awk -v b="$1" 'BEGIN { if (b == "" || b == "null") print "unknown"; else printf "%.0f kb/s", b / 1000 }'; }
 
-# Parses `[--dry-run] [--score] <input.mkv>` into DRY_RUN, SCORE and INPUT.
+# Parses `[--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>`
+# into DRY_RUN, SCORE, YES ("--yes" when given), START_AT (epoch seconds)
+# and INPUT.
 parse_args() {
-    DRY_RUN="" SCORE=""
+    local start=""
+    DRY_RUN="" SCORE="" YES="" START_AT=""
     while (($#)); do
         case $1 in
             --dry-run) DRY_RUN=1 ;;
             --score) SCORE=1 ;;
+            --yes) YES=--yes ;;
+            --start-at) (($# >= 2)) || die "--start-at needs a time"; start=$2; shift ;;
             -*) die "Unknown option $1" ;;
             *) break ;;
         esac
         shift
     done
-    (($# == 1)) || die "Usage: $(basename "$0") [--dry-run] [--score] <input.mkv>"
+    (($# == 1)) || die "Usage: $(basename "$0") [--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>"
     INPUT=$1
     [[ -f $INPUT ]] || die "No such file: $INPUT"
+    [[ -z $start ]] || START_AT=$(parse_when --start-at "$start" "$EPOCHSECONDS") || exit 1
+}
+
+# Epoch seconds of time $2 (anything `date -d` reads) for option $1. A time
+# of day alone ("07:00") is its first occurrence after epoch $3.
+parse_when() {
+    local t
+    t=$(date -d "$2" +%s 2>/dev/null) || die "$1: '$2' is not a date or time"
+    if [[ $2 =~ ^[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?$ ]]; then
+        # By calendar day, not 86400 s: a day with a clock change is longer
+        # or shorter.
+        while (( t <= $3 )); do t=$(date -d "$(date -d "@$t" +%F) $2 + 1 day" +%s); done
+    fi
+    echo "$t"
+}
+
+# Before section 0: waits until START_AT (epoch seconds), if set and still
+# ahead, showing the time left.
+wait_for_start() {
+    [[ -n ${START_AT:-} ]] && (( START_AT > EPOCHSECONDS )) || return 0
+    printf '  Waiting until %s%s%s · Ctrl+C to cancel\n' "$BOLD" "$(date -d "@$START_AT" '+%a %d %b %H:%M:%S')" "$RESET"
+    while (( START_AT > EPOCHSECONDS )); do
+        progress "starts in $(hms $((START_AT - EPOCHSECONDS)))"
+        sleep 1
+    done
+    progress ""
 }
 
 # x265's presets, fastest first.

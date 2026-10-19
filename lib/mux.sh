@@ -4,9 +4,10 @@
 RELEASE_GROUP="Zi0P4tch0"
 ORIGINAL_MEDIA_TYPE="Blu-ray"
 
-# Sets OUTPUT and MOVIE_TITLE from INPUT and prints the section 2 container
-# plan. An entry script may define `rename_stem <stem>` to rewrite further
-# parts of the output name.
+# Sets MOVIE_TITLE, MOVIE_DIR (the film's folder beside INPUT, named after
+# MOVIE_TITLE) and OUTPUT in it from INPUT, and prints the section 2
+# container plan. An entry script may define `rename_stem <stem>` to rewrite
+# further parts of the output name.
 plan_container() {
     local stem
     stem=$(basename "${INPUT%.*}")
@@ -16,10 +17,11 @@ plan_container() {
     # way to ours.
     [[ $stem =~ ^(.*\])-[^][\ -]+$ ]] && stem=${BASH_REMATCH[1]}
     declare -F rename_stem >/dev/null && stem=$(rename_stem "$stem")
-    OUTPUT="$(dirname "$INPUT")/$stem-$RELEASE_GROUP.mkv"
     # "Title (Year)" from Radarr-style names, else the whole name.
     MOVIE_TITLE=$(basename "${INPUT%.*}")
     [[ $MOVIE_TITLE =~ ^(.*\([0-9]{4}\)) ]] && MOVIE_TITLE=${BASH_REMATCH[1]}
+    MOVIE_DIR="$(dirname "$INPUT")/$MOVIE_TITLE"
+    OUTPUT="$MOVIE_DIR/$stem-$RELEASE_GROUP.mkv"
 
     heading "Subtitles"
     if (( ${#SUB_STREAMS[@]} == 0 )); then
@@ -37,7 +39,7 @@ plan_container() {
     (( ${#COVER_STREAMS[@]} == 0 )) || setting "Cover art" "${#COVER_STREAMS[@]} attached picture(s) kept"
     [[ -n $FIX_V_LANG ]] && setting "Video language" "$V_LANG → $FIX_V_LANG"
 
-    kv "Output" "$(basename "$OUTPUT")"
+    kv "Output" "$(basename "$MOVIE_DIR")/$(basename "$OUTPUT")"
 }
 
 # Builds TAGS (global Matroska tags) from the calibration result, followed by
@@ -81,10 +83,15 @@ plan_output() {
     return 0
 }
 
-# Asks before encoding, unless this is a dry run.
+# Asks before encoding, unless this is a dry run or YES says why not to.
 confirm_encode() {
     local answer
     [[ -n $DRY_RUN ]] && return 0
+    if [[ -n ${YES:-} ]]; then
+        echo
+        ok "Full encode at $PRESET · CRF $SELECTED_CRF ($YES)"
+        return 0
+    fi
     echo
     [[ -t 0 ]] || die "Not a terminal — cannot ask whether to continue"
     read -r -p "  ${BOLD}Continue with the full encode at $PRESET · CRF $SELECTED_CRF? [y/N]${RESET} " answer

@@ -10,15 +10,16 @@ Bash scripts that convert Blu-ray remuxes to HEVC Main10 for direct play on an N
 - `hevc-2160p-hdr.sh`: 2160p HDR10, plus Dolby Vision 8.1 when the source has Dolby Vision (profile 7 is converted).
 - `hevc-farm.sh`: either of the above, spread over several hosts by SSH.
 
-Each run probes the source and crops black bars. It then calibrates the CRF on samples of the film: per preset, the highest CRF that passes VMAF NEG mean ≥ 95, 1%-low ≥ 90 and CAMBI ≤ 2.5 in every half second. It cuts the worst sample next to the output for a look, and asks before encoding. The output has the video, a stereo AAC track, the original audio, subtitles and chapters, with the calibration in its tags. Measurements are cached in `<input>.analysis`, so a rerun only encodes what is new.
+Each run probes the source and crops black bars. It then calibrates the CRF on samples of the film: per preset, the highest CRF that passes VMAF NEG mean ≥ 95, 1%-low ≥ 90 and CAMBI ≤ 2.5 in every half second. It cuts the worst sample for a look, and asks before encoding. The output has the video, a stereo AAC track, the original audio, subtitles and chapters, with the calibration in its tags. Everything goes in a folder named after the film beside the input. Measurements are cached there in a `.analysis` file, so a rerun only encodes what is new.
 
 ```
-nix run 'github:matteo-pacini/EncodingCompendium?dir=nix#hevc-2160p-hdr' -- [--dry-run] [--score] movie.mkv
+nix run 'github:matteo-pacini/EncodingCompendium?dir=nix#hevc-2160p-hdr' -- [--dry-run] [--score] [--yes] [--start-at <time>] movie.mkv
 ```
 
 From a checkout: `nix develop path:./nix -c ./hevc-2160p-hdr.sh movie.mkv`.
 
 - `--score` scores the whole output against the source after the encode, and stores the result as `FULL_*` tags.
+- `--yes` encodes without asking. `--start-at 23:00` waits until then; any `date -d` time works.
 - `PRESETS="medium:14,15,16;slow:16,17,18"` sets the presets and CRFs to try. Defaults: `slow:18,19,20` at 1080p, `slow:16,17,18,19,20` at 2160p.
 - `SAMPLE_PERCENT` and `SAMPLE_DURATION` set how much of the film calibration encodes. Defaults: 3% in 20 s samples at 1080p, 1.5% in 12 s at 2160p.
 
@@ -34,7 +35,8 @@ A worker needs an SSH alias with key login, and Nix. It fetches its tools from t
 - The video is split into ≈ 3 min chunks at scene cuts. The chunks are encoded on every slot, with faster slots taking more, and each chunk is scored on the slot that encoded it.
 - The master joins the chunks and adds Dolby Vision.
 - A failed chunk is retried, and an unreachable host's chunks go to the other hosts.
-- `--no-local` leaves the master out of the encoding.
+- `--no-local` leaves the master out of the encoding. With no `--worker`, the master encodes alone.
+- `--stop-at 07:00` starts no chunk that would end later, and stops there. Returned chunks are recorded in a `.chunks` file, so running the same command again carries on.
 - The whole film is always scored.
 
 # Software Requirements

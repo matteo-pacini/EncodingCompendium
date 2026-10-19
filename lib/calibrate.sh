@@ -4,9 +4,10 @@
 # (VMAF_OPTIONS) and XPSNR, and keeps the highest CRF before the first failed
 # gate. Then picks a preset: the fastest (by x265's preset order) whose file
 # is within SIZE_TOLERANCE of the smallest. Measurements are cached per
-# preset and CRF in <input>.analysis, so a new CRF list or gate only encodes
-# CRFs never measured. cut_worst_sample then encodes the chosen setting's
-# worst scene next to the output, for a look before the full encode.
+# preset and CRF in the .analysis (locate_analysis), so a new CRF list or
+# gate only encodes CRFs never measured. cut_worst_sample then encodes the
+# chosen setting's worst scene next to the output, for a look before the
+# full encode.
 # Sourced by the hevc-*.sh entry scripts.
 #
 # The entry script provides: PRESETS (parsed by parse_presets) X265_PARAMS
@@ -120,7 +121,16 @@ shared_fingerprint() {
     } | sha256sum | cut -d' ' -f1
 }
 
-# Reads <input>.analysis into CACHE (plain key=value lines — never sourced):
+# Sets ANALYSIS: <input stem>.analysis in MOVIE_DIR, which it creates. One
+# beside the input, where earlier versions kept it, is moved in.
+locate_analysis() {
+    local old="${INPUT%.*}.analysis"
+    ANALYSIS="$MOVIE_DIR/$(basename "$old")"
+    mkdir -p "$MOVIE_DIR"
+    [[ -e $ANALYSIS || ! -f $old ]] || mv "$old" "$ANALYSIS"
+}
+
+# Reads ANALYSIS into CACHE (plain key=value lines — never sourced):
 # shared values under their own keys, each preset's fingerprint under
 # "<preset>.fingerprint", and one CRF's measurements under "<preset>@<crf>"
 # (tab-separated: created neg 1%-low scene-1%-low scene-at cambi xpsnr Mb/s
@@ -465,13 +475,13 @@ check_fingerprint() {
     CACHE[$preset.fingerprint]=$fingerprint
 }
 
-# Walks every preset in PRESETS, measures the stereo gain, saves
-# <input>.analysis, then picks the preset and prints the decision. Exits
-# when no preset has a passing CRF.
+# Walks every preset in PRESETS, measures the stereo gain, saves the
+# .analysis, then picks the preset and prints the decision. Exits when no
+# preset has a passing CRF.
 run_calibration() {
     local i preset fingerprint min_size best="" size
     declare -gA RES_CRF=() RES_SIZE=() RES_STOPPED=() RES_FPS=() RES_SCENE_AT=() RES_SCENE_LOW=() RES_CREATED=() RES_ROWS=()
-    ANALYSIS="${INPUT%.*}.analysis"
+    locate_analysis
     load_analysis
 
     for i in "${!PRESET_NAMES[@]}"; do

@@ -6,6 +6,11 @@
 # a slot (copy inputs, run, fetch and check outputs) and returns 0 once its
 # outputs are home and verified. A job that fails is queued again, on any
 # slot, until it succeeds; a host that cannot be reached loses its slots.
+#
+# With STOP_AT (--stop-at), no job starts that its slot would not finish by
+# then, and the run ends at that time (status 75), jobs still running
+# stopped. Measured CRFs are in the .analysis and finished chunks in
+# <output stem>.chunks, so the same command run again goes on from there.
 
 # A job failing this many times stops the run: the fault is the job's.
 FARM_ATTEMPTS=3
@@ -105,6 +110,34 @@ farm_defer() {
     (( sooner >= ${#FARM_PENDING[@]} )) && FARM_HELD=$2
 }
 
+# Whether slot $1 would finish job $2 by STOP_AT, at the speed of its jobs
+# so far in this schedule or else, for a chunk, the calibrated ENCODE_FPS
+# (which leaves scoring out). Yes without STOP_AT or any speed.
+farm_fits() {
+    local rate
+    [[ -n ${STOP_AT:-} ]] || return 0
+    if (( ${SLOT_SEC[$1]:-0} > 0 )); then
+        rate=$(awk -v f="${SLOT_FR[$1]}" -v s="${SLOT_SEC[$1]}" 'BEGIN { print f / s }')
+    elif [[ $2 == chunk:* && -n ${ENCODE_FPS:-} ]]; then
+        rate=$ENCODE_FPS
+    else
+        return 0
+    fi
+    awk -v n="$(job_frames "$2")" -v r="$rate" -v now="$EPOCHSECONDS" -v stop="$STOP_AT" 'BEGIN { exit !(r > 0 && now + n / r <= stop) }'
+}
+
+# Ends the run for STOP_AT: its time has come, or no queued job would finish
+# by then. Jobs still running die with the run (cleanup); farm_schedule's
+# pending list is in scope, being the caller.
+farm_stop() {
+    local i running=0
+    for i in "${!SLOT_HOST[@]}"; do [[ -n ${SLOT_JOB[i]:-} ]] && running=$((running + 1)); done
+    farm_draw
+    farm_event "$YELLOW▲$RESET Stop time $(date -d "@$STOP_AT" '+%a %H:%M:%S'): ${#pending[@]} job(s) not started$(
+        ((running)) && echo ", $running stopped") · what finished is kept: run the same command again to go on"
+    exit 75
+}
+
 # Runs every job in FARM_QUEUE to success. A slot with nothing left in it
 # takes a job from FARM_EXTRA, work ahead that may be wanted later, until
 # FARM_QUEUE's last job is done; extras then running are let finish.
@@ -159,9 +192,11 @@ farm_schedule() {
             if (( ${#pending[@]} > 0 )); then
                 FARM_PENDING=("${pending[@]}")
                 farm_defer "$i" "${pending[0]}" && continue
+                farm_fits "$i" "${pending[0]}" || continue
                 id=${pending[0]}
                 pending=("${pending[@]:1}")
             elif (( needed && ${#extra[@]} > 0 )); then
+                farm_fits "$i" "${extra[0]}" || continue
                 id=${extra[0]}
                 extra=("${extra[@]:1}")
             else
@@ -180,6 +215,8 @@ farm_schedule() {
         (( alive )) || die "No slot left: every worker is unreachable"
         busy=0
         for i in "${!SLOT_HOST[@]}"; do [[ -n ${SLOT_JOB[i]:-} ]] && busy=1; done
+        # Idle with jobs queued: only farm_fits holds jobs back from every slot.
+        [[ -n ${STOP_AT:-} ]] && (( EPOCHSECONDS >= STOP_AT || (!busy && ${#pending[@]} > 0) )) && farm_stop
         (( busy || ${#pending[@]} > 0 )) || break
         farm_draw
         sleep 1
@@ -284,7 +321,7 @@ sample_done() { [[ -s $WORK/result-$1-$2-$3 && -s $WORK/vmaf-$1-$2-$3.json ]]; }
 farm_calibrate() {
     local i n preset crf p rounds=0 created neg neg_low scene_low scene_at cambi xpsnr step failed after
     declare -A next=() stopped=() prev_xpsnr=() prev_step=() prev_cambi=()
-    ANALYSIS="${INPUT%.*}.analysis"
+    locate_analysis
     load_analysis
     for i in "${!PRESET_NAMES[@]}"; do check_fingerprint "${PRESET_NAMES[i]}"; done
     save_analysis
@@ -415,6 +452,83 @@ plan_chunks() {
         item "No cut within ${CHUNK_WINDOWS[-1]} s of ${dropped[*]}: no join there, longer chunks instead"
 }
 
+# What the chunks depend on: the source, the preset, CRF, x265 settings,
+# filters, scoring and chunk length, and the code that encodes and scores
+# them. The plan itself is read back from CHUNKS_FILE, not made again.
+chunks_fingerprint() {
+    {
+        stat -L -c '%s %Y' "$INPUT"
+        printf '%s\n' "$PRESET" "$SELECTED_CRF" "$X265_PARAMS" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" \
+            "$CHUNK_SECONDS" "${CHUNK_WINDOWS[*]}"
+        declare -f farm_job_chunk score_frames
+    } | sha256sum | cut -d' ' -f1
+}
+
+# Reads CHUNKS_FILE (<output stem>.chunks, beside the output) when an
+# earlier run left one: its plan into CHUNK_START, CHUNKS and
+# CHUNK_FRAMES_TOTAL, the chunks it recorded into CHUNK_DONE (chunk →
+# "slot\tseconds\tbytes\tsha256"), and YES, the encode being confirmed
+# already. Dies when the file is from other settings, rather than join
+# chunks of two encodes.
+load_chunks() {
+    local kind k a b c d fingerprint="" end=""
+    CHUNKS_FILE="${OUTPUT%.mkv}.chunks"
+    CHUNK_START=()
+    declare -gA CHUNK_DONE=()
+    [[ -f $CHUNKS_FILE ]] || return 0
+    while IFS=$'\t' read -r kind k a b c d; do
+        case $kind in
+            fingerprint) fingerprint=$k ;;
+            plan) CHUNK_START[k]=$a end=$((a + b)) ;;
+            encoded) CHUNK_DONE[$k]=$a$'\t'$b$'\t'$c$'\t'$d ;;
+        esac
+    done <"$CHUNKS_FILE"
+    [[ $fingerprint == "$(chunks_fingerprint)" && -n $end ]] ||
+        die "$(basename "$CHUNKS_FILE") is from an encode with other settings or code — delete it and $(basename "${OUTPUT%.mkv}").partial to start over"
+    CHUNK_START+=("$end")
+    CHUNKS=$(( ${#CHUNK_START[@]} - 1 ))
+    CHUNK_FRAMES_TOTAL=$(( end - CHUNK_START[0] ))
+    YES="resuming"
+    heading "Resume"
+    kv "Chunks" "${#CHUNK_DONE[@]} of $CHUNKS recorded in $(basename "$CHUNKS_FILE"), checked before the encode"
+}
+
+# Writes the plan to CHUNKS_FILE, which farm_job_chunk then adds to.
+write_chunks_plan() {
+    local k
+    {
+        echo "# $(basename "$0") chunks of $(basename "$OUTPUT"): the plan, then each chunk once checked — delete with $(basename "$PARTS") to start over"
+        printf 'fingerprint\t%s\n' "$(chunks_fingerprint)"
+        for ((k = 0; k < CHUNKS; k++)); do
+            printf 'plan\t%d\t%d\t%d\n' "$k" "${CHUNK_START[k]}" $(( CHUNK_START[k + 1] - CHUNK_START[k] ))
+        done
+    } >"$CHUNKS_FILE.tmp"
+    mv "$CHUNKS_FILE.tmp" "$CHUNKS_FILE"
+}
+
+# Keeps each chunk in CHUNK_DONE whose files are in PARTS as recorded (size,
+# SHA-256, a score line per frame), as done by an earlier run; drops the
+# others, to encode again.
+check_chunks_done() {
+    local k slot seconds bytes sha name frames lost=()
+    (( ${#CHUNK_DONE[@]} > 0 )) || return 0
+    for k in "${!CHUNK_DONE[@]}"; do
+        progress "Checking chunk $((k + 1)) from an earlier run…"
+        IFS=$'\t' read -r slot seconds bytes sha <<<"${CHUNK_DONE[$k]}"
+        name=$(printf 'chunk-%03d' "$k") frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
+        if [[ -f $PARTS/$name.hevc && -f $PARTS/$name.tsv ]] && (( $(stat -c %s "$PARTS/$name.hevc") == bytes )) &&
+            (( $(wc -l <"$PARTS/$name.tsv") == frames )) && [[ $(sha256sum <"$PARTS/$name.hevc" | cut -d' ' -f1) == "$sha" ]]; then
+            echo "$k $frames - $seconds" >>"$FARM/video-done"
+        else
+            unset "CHUNK_DONE[$k]"
+            lost+=($((k + 1)))
+        fi
+    done
+    progress ""
+    (( ${#CHUNK_DONE[@]} == 0 )) || ok "From earlier runs, as recorded: chunk $(ranges $(for k in "${!CHUNK_DONE[@]}"; do echo $((k + 1)); done))"
+    (( ${#lost[@]} == 0 )) || warn "Missing or changed since recorded, so encoded again: chunk $(ranges "${lost[@]}")"
+}
+
 # Splits the video at the planned joins into $PARTS/chunk-<k>.mkv and
 # checks each has its planned frames.
 split_chunks() {
@@ -440,7 +554,7 @@ split_chunks() {
 # to end with the VBV buffer back at 90%, the fullness the next one starts
 # from. Without the RPU: Dolby Vision goes in once the chunks are joined.
 # The slot then scores the chunk against its source (score_frames) into
-# $FARM/<chunk>.tsv.
+# $PARTS/<chunk>.tsv. Checked, the chunk is recorded in CHUNKS_FILE.
 # A chunk's first frame has no predecessor for VMAF's motion or XPSNR's
 # temporal term: about 1 VMAF lower and XPSNR higher there than in one
 # pass over the film, on one frame per chunk.
@@ -482,13 +596,17 @@ EOF
     )" | farm_follow "$i" "chunk:$k"
     (( PIPESTATUS[0] == 0 )) || return "${PIPESTATUS[0]}"
     slot_get "$i" "$name.hevc" "$PARTS/$name.hevc" || return
-    slot_get "$i" "$name.tsv" "$FARM/$name.tsv" || return
+    slot_get "$i" "$name.tsv" "$PARTS/$name.tsv" || return
     slot_rm "$i" "$name.mkv"
     got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.hevc" | wc -l)
     (( got == frames )) || { rm -f "$PARTS/$name.hevc"; echo "$name.hevc has $got frames, not $frames" >&2; return 1; }
-    got=$(wc -l <"$FARM/$name.tsv")
-    (( got == frames )) || { rm -f "$FARM/$name.tsv"; echo "$name.tsv scores $got frames, not $frames" >&2; return 1; }
+    got=$(wc -l <"$PARTS/$name.tsv")
+    (( got == frames )) || { rm -f "$PARTS/$name.tsv"; echo "$name.tsv scores $got frames, not $frames" >&2; return 1; }
+    rm -f "$PARTS/$name.mkv"
+    # One line appended per chunk (jobs run side by side), after every check.
     # Seconds of encoding, the score left out.
+    printf 'encoded\t%d\t%s\t%s\t%s\t%s\n' "$k" "${SLOT_NAME[i]}" "$(<"$FARM/jobs/chunk_$k.result")" \
+        "$(stat -c %s "$PARTS/$name.hevc")" "$(sha256sum <"$PARTS/$name.hevc" | cut -d' ' -f1)" >>"$CHUNKS_FILE"
     echo "$k $frames $i $(<"$FARM/jobs/chunk_$k.result")" >>"$FARM/video-done"
 }
 
@@ -505,19 +623,28 @@ video_slots() {
             "$FARM/video-done"
         wrap_text 51 "${chunks[*]:+$(ranges "${chunks[@]}")}"
     done
+    mapfile -t chunks < <(awk '$3 == "-" { print $1 + 1 }' "$FARM/video-done")
+    (( ${#chunks[@]} == 0 )) || {
+        awk -v total="$CHUNK_FRAMES_TOTAL" '$3 == "-" { f += $2 } END { printf "  %-14s %7d %9s %5.0f%%  ", "earlier runs", f, "—", f / total * 100 }' \
+            "$FARM/video-done"
+        wrap_text 51 "$(ranges "${chunks[@]}")"
+    }
 }
 
 video_total() {
-    local i frames=0 frame _ step elapsed=$(( SECONDS - FARM_VIDEO_START ))
+    local i frames=0 frame _ step elapsed=$(( SECONDS - FARM_VIDEO_START )) done earlier earlier_chunks
     for i in "${!SLOT_HOST[@]}"; do
         [[ -n ${SLOT_JOB[i]:-} ]] && read -r frame _ step 2>/dev/null <"$FARM/slot-$i.state" || continue
         # A chunk being scored is encoded.
         [[ $step == score ]] && frame=$(<"$FARM/slot-$i.total")
         frames=$((frames + frame))
     done
-    frames=$(( frames + $(awk '{ s += $2 } END { print s + 0 }' "$FARM/video-done" 2>/dev/null || echo 0) ))
-    awk -v f="$frames" -v t="$CHUNK_FRAMES_TOTAL" -v e="$elapsed" -v d="$FARM_DONE" -v n="$CHUNKS" 'BEGIN {
-        r = (e > 0 ? f / e : 0)
+    # Chunks from earlier runs (slot "-") count as done, not towards the speed.
+    read -r done earlier earlier_chunks < <(awk '{ s += $2 } $3 == "-" { e += $2; n++ } END { print s + 0, e + 0, n + 0 }' \
+        "$FARM/video-done" 2>/dev/null || echo 0 0 0)
+    frames=$((frames + done))
+    awk -v f="$frames" -v p="$earlier" -v t="$CHUNK_FRAMES_TOTAL" -v e="$elapsed" -v d="$((FARM_DONE + earlier_chunks))" -v n="$CHUNKS" 'BEGIN {
+        r = (e > 0 ? (f - p) / e : 0)
         printf "Video · %d/%d chunks · %.1f%% · %.2f fps · ETA ", d, n, f / t * 100, r
         if (r > 0) { s = (t - f) / r; printf "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60 } else printf "—" }'
 }
@@ -550,10 +677,11 @@ video_detail() {
     [[ -z ${FARM_HELD:-} ]] || printf ' (%s held for a faster slot)' "$(( ${FARM_HELD#chunk:} + 1 ))"
 }
 
-# Section 4's video step on every slot: plan, split, encode the chunks, join
-# them into VIDEO_HEVC and, with Dolby Vision, put the source RPU in.
+# Section 4's video step on every slot: plan (or, after load_chunks, check
+# what earlier runs did), split, encode the chunks still to do, join them
+# into VIDEO_HEVC and, with Dolby Vision, put the source RPU in.
 farm_encode_video() {
-    local k
+    local k ran frames
     heading "Video on ${#SLOT_HOST[@]} slots"
     if [[ -n $DRY_RUN ]]; then
         item "Chunks of ≈ $(hms "$CHUNK_SECONDS") joined at scene cuts, one x265 per slot:"
@@ -561,20 +689,32 @@ farm_encode_video() {
         [[ -n ${DV_PROFILE:-} ]] && setting "Dolby Vision" "dovi_tool inject-rpu on the joined stream"
         return 0
     fi
-    plan_chunks
-    # The split video beside the intermediates the single-host encode needs.
-    local need free
-    need=$(awk -v v="$(stream_bps "$V")" -v d="$DURATION" -v s="$SELECTED_SIZE" 'BEGIN { printf "%.0f", v * d / 8 + s * 2.2 }')
-    free=$(df --output=avail -B1 "$PARTS" | tail -1)
-    (( free >= need )) || die "Needs ≈ $(human_bytes "$need") free beside the output for the chunks, $(human_bytes "$free") available"
-    split_chunks
+    : >"$FARM/video-done"
+    if (( ${#CHUNK_START[@]} == 0 )); then
+        plan_chunks
+        write_chunks_plan
+    else
+        kv "Chunks" "$CHUNKS · $CHUNK_FRAMES_TOTAL frames · planned in an earlier run"
+        check_chunks_done
+    fi
     FARM_QUEUE=() FARM_EXTRA=()
-    for ((k = 0; k < CHUNKS; k++)); do FARM_QUEUE+=("chunk:$k"); done
-    FARM_TOTAL=video_total FARM_DETAIL=video_detail FARM_VIDEO_START=$SECONDS
-    ENCODE_START=$SECONDS
-    farm_schedule
-    ENCODE_SECONDS=$((SECONDS - ENCODE_START))
-    ok "$CHUNKS chunks in $(hms "$ENCODE_SECONDS") · $(awk -v f="$CHUNK_FRAMES_TOTAL" -v s="$ENCODE_SECONDS" 'BEGIN { printf "%.2f", f / s }') fps"
+    for ((k = 0; k < CHUNKS; k++)); do [[ -n ${CHUNK_DONE[$k]:-} ]] || FARM_QUEUE+=("chunk:$k"); done
+    ENCODE_SECONDS=0
+    if (( ${#FARM_QUEUE[@]} > 0 )); then
+        # The split video beside the intermediates the single-host encode needs.
+        local need free
+        need=$(awk -v v="$(stream_bps "$V")" -v d="$DURATION" -v s="$SELECTED_SIZE" 'BEGIN { printf "%.0f", v * d / 8 + s * 2.2 }')
+        free=$(df --output=avail -B1 "$PARTS" | tail -1)
+        (( free >= need )) || die "Needs ≈ $(human_bytes "$need") free beside the output for the chunks, $(human_bytes "$free") available"
+        split_chunks
+        for k in "${!CHUNK_DONE[@]}"; do rm -f "$(printf '%s/chunk-%03d.mkv' "$PARTS" "$k")"; done
+        FARM_TOTAL=video_total FARM_DETAIL=video_detail FARM_VIDEO_START=$SECONDS
+        ENCODE_START=$SECONDS
+        farm_schedule
+        ENCODE_SECONDS=$((SECONDS - ENCODE_START))
+        read -r ran frames < <(awk '$3 != "-" { n++; f += $2 } END { print n + 0, f + 0 }' "$FARM/video-done")
+        ok "$ran chunks in $(hms "$ENCODE_SECONDS") · $(awk -v f="$frames" -v s="$ENCODE_SECONDS" 'BEGIN { printf "%.2f", (s > 0 ? f / s : 0) }') fps"
+    fi
     video_slots
     progress "Joining the chunks…"
     : >"$VIDEO_HEVC"

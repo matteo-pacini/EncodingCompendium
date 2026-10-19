@@ -17,15 +17,20 @@ FARM_RDIR="hevc-farm/$FARM_LOCAL-$$"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o Compression=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4
     -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/hevc-farm-%C" -o ControlPersist=60)
 
-# Parses `[--dry-run] [--no-local] [--worker alias[=wrapper]]… <input.mkv>`
-# into DRY_RUN, NO_LOCAL, INPUT, WORKERS and WRAP (alias → wrapper command,
-# which every job on that host runs under).
+# Parses `[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>]
+# [--no-local] [--worker alias[=wrapper]]… <input.mkv>` into DRY_RUN, YES,
+# START_AT and STOP_AT (epoch seconds), NO_LOCAL, INPUT, WORKERS and WRAP
+# (alias → wrapper command, which every job on that host runs under).
 farm_parse_args() {
-    DRY_RUN="" NO_LOCAL="" WORKERS=()
+    local start="" stop="" usage="[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>] [--no-local] [--worker alias[=wrapper]]… <input.mkv>"
+    DRY_RUN="" YES="" START_AT="" STOP_AT="" NO_LOCAL="" WORKERS=()
     declare -gA WRAP=()
     while (($#)); do
         case $1 in
             --dry-run) DRY_RUN=1 ;;
+            --yes) YES=--yes ;;
+            --start-at) (($# >= 2)) || die "--start-at needs a time"; start=$2; shift ;;
+            --stop-at) (($# >= 2)) || die "--stop-at needs a time"; stop=$2; shift ;;
             --no-local) NO_LOCAL=1 ;;
             --worker) (($# >= 2)) || die "--worker needs alias[=wrapper]"; add_worker "$2"; shift ;;
             --worker=*) add_worker "${1#--worker=}" ;;
@@ -34,10 +39,15 @@ farm_parse_args() {
         esac
         shift
     done
-    (($# == 1)) || die "Usage: $(basename "$0") [--dry-run] [--no-local] [--worker alias[=wrapper]]… <input.mkv>"
+    (($# == 1)) || die "Usage: $(basename "$0") $usage"
     INPUT=$1
     [[ -f $INPUT ]] || die "No such file: $INPUT"
     [[ ${#WORKERS[@]} -gt 0 || -z $NO_LOCAL ]] || die "--no-local needs at least one --worker"
+    [[ -z $start ]] || START_AT=$(parse_when --start-at "$start" "$EPOCHSECONDS") || exit 1
+    if [[ -n $stop ]]; then
+        STOP_AT=$(parse_when --stop-at "$stop" "${START_AT:-$EPOCHSECONDS}") || exit 1
+        (( STOP_AT > ${START_AT:-$EPOCHSECONDS} )) || die "--stop-at $stop is not after $([[ -n $START_AT ]] && echo "--start-at $start" || echo now)"
+    fi
 }
 
 add_worker() {
@@ -66,6 +76,7 @@ farm_ref() {
 
 require_farm_ref() {
     local problem
+    (( ${#WORKERS[@]} > 0 )) || return 0
     if problem=$(farm_ref) && farm_ref; then
         requirement "Worker tools" yes "$FARM_REF#tools"
     else

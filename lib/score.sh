@@ -1,7 +1,7 @@
 # The whole film scored after the encode: the output against its source
 # with the calibration's VMAF options and filters, pooled into one VMAF NEG,
 # CAMBI and XPSNR for the film, set beside the calibration's prediction,
-# then stored as FULL_* global tags and in <input>.analysis. Opt-in on the
+# then stored as FULL_* global tags and in the .analysis. Opt-in on the
 # single-host scripts (--score); hevc-farm.sh always scores, chunk by
 # chunk on the slot that encoded it. Sourced by the hevc-*.sh entry
 # scripts.
@@ -78,7 +78,7 @@ tag_value() {
 
 # Reports the pooled scores of the per-frame file $1 against the
 # calibration's prediction and the gates (warnings only: the encode is
-# done), then adds them to OUTPUT's global tags and to <input>.analysis
+# done), then adds them to OUTPUT's global tags and to the .analysis
 # under "<preset>@<crf>.full" (tab-separated: created frames neg 1%-low
 # cambi xpsnr).
 report_score() {
