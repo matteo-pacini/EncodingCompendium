@@ -31,9 +31,8 @@ hevc-farm.sh --worker 'box1=nice -n 10' --worker box2 movie.mkv
 A worker needs an SSH alias with key login, and Nix. It fetches its tools from this flake at the master's commit, so that commit must be pushed. The optional `=wrapper` runs every job on that host under the given command.
 
 - Each host gets one slot per NUMA node, and calibration samples run on every slot.
-- A 2160p video is split into ≈ 3 min chunks at scene cuts. The chunks are encoded on every slot, with faster slots taking more, and each chunk is scored on the slot that encoded it.
+- The video is split into ≈ 3 min chunks at scene cuts. The chunks are encoded on every slot, with faster slots taking more, and each chunk is scored on the slot that encoded it.
 - The master joins the chunks and adds Dolby Vision.
-- A 1080p video is encoded on the master.
 - A failed chunk is retried, and an unreachable host's chunks go to the other hosts.
 - `--no-local` leaves the master out of the encoding.
 - The whole film is always scored.

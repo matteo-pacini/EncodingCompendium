@@ -26,7 +26,7 @@
 set -euo pipefail
 
 LIB="$(dirname "$(readlink -f "$0")")/lib"
-for lib in ui util requirements probe audio calibrate mux score profile-2160p-hdr; do
+for lib in ui util requirements probe audio calibrate mux score parts profile-2160p-hdr; do
     # shellcheck source=/dev/null
     source "$LIB/$lib.sh"
 done

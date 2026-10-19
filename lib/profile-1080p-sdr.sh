@@ -1,6 +1,6 @@
 # The 1080p SDR profile: Blu-ray remux to HEVC Main10 for the Shield's
-# direct play. Sourced by hevc-1080p-sdr.sh after the other lib/ files;
-# each function is one section's profile-specific part.
+# direct play. Sourced by hevc-1080p-sdr.sh and hevc-farm.sh after the
+# other lib/ files; each function is one section's profile-specific part.
 
 PROFILE_TARGET="NVIDIA Shield TV Pro direct play"
 
@@ -160,6 +160,21 @@ profile_encode() {
     fi
     finalize_output
     return 0
+}
+
+# Section 4 in parts (hevc-farm.sh, with lib/parts.sh), first: the
+# intermediates and the x265 CLI options.
+encode_prepare() {
+    prepare_output
+    prepare_parts
+}
+
+# Section 4 in parts, last: the mux, with the Matroska Colour elements
+# ffmpeg writes from COLOUR_FLAGS in profile_encode (ITU-T H.273 1 = BT.709;
+# siting 1,2 = left).
+encode_mux() {
+    mux_parts "HEVC Main10 · CRF $SELECTED_CRF" --colour-matrix-coefficients 0:1 --colour-range 0:1 \
+        --colour-transfer-characteristics 0:1 --colour-primaries 0:1 --chroma-siting 0:1,2
 }
 
 # Section 5.

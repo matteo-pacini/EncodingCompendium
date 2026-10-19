@@ -249,20 +249,6 @@ encode_sample() {
         -pix_fmt yuv420p10le -profile:v main10 "${COLOUR_FLAGS[@]}" -x265-params "$X265_PARAMS:log-level=error" "$4"
 }
 
-# X265_PARAMS (what the calibration measured) as x265 CLI options.
-x265_cli_args() {
-    local IFS=: pair key value
-    for pair in $X265_PARAMS; do
-        key=${pair%%=*} value=${pair#*=}
-        case $key in
-            hdr10 | hdr10-opt | repeat-headers | high-tier)
-                if [[ $value == 1 ]]; then echo "--$key"; else echo "--no-$key"; fi ;;
-            no-*) echo "--$key" ;;
-            *) printf '%s\n' "--$key" "$value" ;;
-        esac
-    done
-}
-
 # Frame count of an RPU file.
 rpu_frames() { dovi_tool info -i "$1" --summary 2>/dev/null | awk '$1 == "Frames:" { print $2 }'; }
 
@@ -270,27 +256,8 @@ rpu_frames() { dovi_tool info -i "$1" --summary 2>/dev/null | awk '$1 == "Frames
 # x265 CLI options and, with Dolby Vision, the source RPU.
 encode_prepare() {
     prepare_output
-    # Intermediates live next to the output, on the filesystem whose free space
-    # is checked below, not in WORK (which may be a small /tmp).
-    PARTS="${OUTPUT%.mkv}.partial"
-    VIDEO_HEVC="$PARTS/video.hevc"
-    STEREO_MKA="$PARTS/stereo.mka"
+    prepare_parts
     RPU="$PARTS/rpu.bin"
-    PARTIAL_FILE="$PARTS/muxed.mkv"
-    if [[ -z $DRY_RUN ]]; then
-        mkdir -p "$PARTS"
-        PARTIAL=$PARTS
-    fi
-
-    # The raw video and the muxed file coexist until the end.
-    NEED_BYTES=$(awk -v s="$SELECTED_SIZE" 'BEGIN { printf "%.0f", s * 2.2 }')
-    FREE_BYTES=$(df --output=avail -B1 "$(dirname "$OUTPUT")" | tail -1)
-    if (( FREE_BYTES < NEED_BYTES )); then
-        [[ -n $DRY_RUN ]] || die "Needs ≈ $(human_bytes "$NEED_BYTES") free next to the output, $(human_bytes "$FREE_BYTES") available"
-        warn "Needs ≈ $(human_bytes "$NEED_BYTES") free next to the output, $(human_bytes "$FREE_BYTES") available"
-    fi
-
-    mapfile -t X265_CLI < <(x265_cli_args)
     DV_ARGS=()
     [[ -n $DV_PROFILE ]] && DV_ARGS=(--dolby-vision-profile 8.1 --dolby-vision-rpu "$RPU")
 
@@ -305,23 +272,6 @@ encode_prepare() {
             awk -v e="$TOTAL_FRAMES" -v a="$SOURCE_RPU_FRAMES" 'BEGIN { d = e - a; exit !((d < 0 ? -d : d) <= 2) }' ||
                 die "The RPU does not match the video's frame count"
         fi
-    fi
-    return 0
-}
-
-# Section 4: the stereo track, from the whole film's original audio.
-encode_stereo() {
-    heading "Stereo track"
-    STEREO_ARGS=(-y -i "$INPUT" -map 0:"$A" -vn -af "$STEREO_FILTER" -c:a aac -b:a "$STEREO_BITRATE" "$STEREO_MKA")
-    if [[ -n $DRY_RUN ]]; then
-        run ffmpeg -nostdin -hide_banner -v error "${STEREO_ARGS[@]}"
-    else
-        STEP_NAMES=("encode")
-        BLOCK_CRF=""
-        begin_sample "AAC $STEREO_BITRATE · $(hms "$DURATION")"
-        run_time_step 0 "$DURATION" ffmpeg -nostdin -hide_banner -v error -nostats -progress pipe:1 "${STEREO_ARGS[@]}"
-        clear_block
-        ok "$(human_bytes "$(stat -c %s "$STEREO_MKA")")"
     fi
     return 0
 }
@@ -368,10 +318,8 @@ encode_mux() {
         check "Dolby Vision RPU in the encode" "$SOURCE_RPU_FRAMES" "$(rpu_frames "$PARTS/encoded-rpu.bin")"
     fi
 
-    heading "Mux"
-    # Matroska colour elements: mkvmerge does not derive them from a raw HEVC
-    # stream. Numbers per ITU-T H.273; chroma siting per Matroska
-    # (1 = collocated, 2 = half).
+    # Matroska colour elements, numbered per ITU-T H.273; chroma siting per
+    # Matroska (1 = collocated, 2 = half).
     case $V_CHROMALOC in
         topleft) SITING=1,1 ;; left) SITING=1,2 ;; center) SITING=2,2 ;; top) SITING=2,1 ;; *) SITING=0,0 ;;
     esac
@@ -390,28 +338,7 @@ encode_mux() {
     fi
     [[ -n $MAX_CLL ]] && COLOUR_MKV+=(--max-content-light "0:${MAX_CLL%,*}" --max-frame-light "0:${MAX_CLL#*,}")
 
-    # From the source: the original audio (not default), every subtitle (default
-    # cleared, forced kept by mkvmerge), chapters and attachments (cover art);
-    # none of its tags. Track IDs are the source's, as ffprobe numbers them.
-    SOURCE_OPTS=(--no-video --no-global-tags --no-track-tags --audio-tracks "$A"
-        --language "$A:$A_LANG" --track-name "$A:$A_TITLE" --default-track-flag "$A:no")
-    if (( ${#SUB_STREAMS[@]} > 0 )); then
-        SOURCE_OPTS+=(--subtitle-tracks "$(IFS=,; echo "${SUB_STREAMS[*]}")")
-        for s in "${SUB_STREAMS[@]}"; do SOURCE_OPTS+=(--default-track-flag "$s:no"); done
-    else
-        SOURCE_OPTS+=(--no-subtitles)
-    fi
-    # mkvmerge exits 1 for warnings only. The stereo file brings only its
-    # audio: ffmpeg copied the source's chapters into it as well.
-    run mkvmerge -q -o "$PARTIAL_FILE" --title "$MOVIE_TITLE" \
-        --language "0:$V_OUT_LANG" --track-name "0:HEVC Main10 · CRF $SELECTED_CRF${DV_PROFILE:+ · Dolby Vision 8.1}" \
-        --default-track-flag 0:yes --default-duration "0:${V_FPS}p" "${COLOUR_MKV[@]}" "$VIDEO_HEVC" \
-        --language "0:$A_LANG" --track-name "0:Stereo · AAC $STEREO_BITRATE" --default-track-flag 0:yes \
-        --no-chapters --no-global-tags --no-track-tags "$STEREO_MKA" \
-        "${SOURCE_OPTS[@]}" "$INPUT" || [[ $? == 1 ]]
-
-    finalize_output
-    rm -rf "$PARTS"
+    mux_parts "HEVC Main10 · CRF $SELECTED_CRF${DV_PROFILE:+ · Dolby Vision 8.1}" "${COLOUR_MKV[@]}"
     return 0
 }
 

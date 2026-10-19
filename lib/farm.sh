@@ -1,6 +1,6 @@
 # hevc-farm.sh's distributed work: a job scheduler over the slots that
 # lib/remote.sh found, with one progress bar per slot, then calibration and
-# the 2160p video encode split into jobs. Sourced after the other lib/ files.
+# the video encode split into jobs. Sourced after the other lib/ files.
 #
 # A job is an id "<kind>:<args…>"; farm_job_<kind> <slot> <args…> runs it on
 # a slot (copy inputs, run, fetch and check outputs) and returns 0 once its
@@ -345,7 +345,7 @@ farm_calibrate() {
 }
 
 ###############################################################################
-# 2160p video
+# Video
 ###############################################################################
 
 # Seconds of film per chunk: short enough to keep every slot busy to the
@@ -356,21 +356,24 @@ CHUNK_SECONDS=180
 # little, as the queue evens the slots out.
 CHUNK_WINDOWS=(15 30 60)
 
-# Plans the chunks: CHUNK_START (first frame of each, then the frame count)
-# and CHUNK_TIME (each join's timestamp). Every join is a source keyframe
-# on a scene cut within CHUNK_WINDOWS of its target; a target with none is
-# dropped, its two chunks made one. A chunk opening mid-scene would start
-# from a cold keyframe the continuous encode does not have, which can band
-# on dark gradients.
+# Plans the chunks: CHUNK_START, the first frame of each, then the frame
+# count. Every join is a source keyframe on a scene cut within
+# CHUNK_WINDOWS of its target; a target with none is dropped, its two
+# chunks made one. A chunk opening mid-scene would start from a cold
+# keyframe the continuous encode does not have, which can band on dark
+# gradients.
 plan_chunks() {
-    local packets="$WORK/packets" targets k t w from scores best dropped=()
+    local packets="$WORK/packets" targets k t w from scores best dropped=() lead
     progress "Reading the video's packet index…"
-    # "pts|pts_time|flags" per frame, in presentation order.
+    # "pts|pts_time|flags|packet number" per frame, in presentation order.
     ffprobe -v error -select_streams "$V" -show_entries packet=pts,pts_time,flags -of compact=p=0:nk=1 "$INPUT" |
-        sort -t'|' -k1,1n >"$packets"
-    CHUNK_FRAMES_TOTAL=$(wc -l <"$packets")
+        awk '{ print $0 "|" NR - 1 }' | sort -t'|' -k1,1n >"$packets"
+    # Frames shown before the first keyframe (a stream cut mid-GOP opens
+    # with some) do not decode: the first chunk starts after them.
+    lead=$(awk -F'|' '$3 ~ /K/ { print NR - 1; exit }' "$packets")
+    CHUNK_FRAMES_TOTAL=$(( $(wc -l <"$packets") - lead ))
     progress ""
-    CHUNK_START=(0) CHUNK_TIME=()
+    CHUNK_START=("$lead")
     targets=$(awk -v d="$DURATION" -v c="$CHUNK_SECONDS" 'BEGIN { n = int(d / c + 0.5); for (k = 1; k < n; k++) print d * k / n }')
     k=0
     for t in $targets; do
@@ -384,9 +387,13 @@ plan_chunks() {
             scores=$(ffmpeg -nostdin -hide_banner -copyts -ss "$from" -t $((2 * w)) -i "$INPUT" -map 0:"$V" \
                 -vf "scale=960:-2,scdet=threshold=0,metadata=print:key=lavfi.scd.score" -f null - 2>&1 |
                 awk '/ pts:/ { sub(/.* pts:/, ""); p = $1 } /lavfi.scd.score=/ { sub(/.*=/, ""); print p, $1 }')
+            # Only a keyframe as many packets into the stream as frames into
+            # the film, where split_chunks counts packets: an open-GOP one
+            # has a leading frame decoded after it, which a split there
+            # would cut off from its chunk.
             best=$(awk -F'|' -v t="$t" -v w="$w" -v prev="${CHUNK_START[-1]}" -v sc="$scores" '
                 BEGIN { n = split(sc, a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, " "); score[f[1]] = f[2] } }
-                $3 ~ /K/ && NR - 1 > prev && $2 >= t - w && $2 <= t + w && score[$1] > 5 {
+                $3 ~ /K/ && $4 == NR - 1 && NR - 1 > prev && $2 >= t - w && $2 <= t + w && score[$1] > 5 {
                     d = ($2 - t) * ($2 - t)
                     if (cut == "" || d < cd) { cut = NR - 1; cd = d }
                 }
@@ -398,10 +405,9 @@ plan_chunks() {
             continue
         fi
         CHUNK_START+=("$best")
-        CHUNK_TIME+=("$(sed -n "$((best + 1))p" "$packets" | cut -d'|' -f2)")
     done
     progress ""
-    CHUNK_START+=("$CHUNK_FRAMES_TOTAL")
+    CHUNK_START+=("$((lead + CHUNK_FRAMES_TOTAL))")
     CHUNKS=$(( ${#CHUNK_START[@]} - 1 ))
     kv "Chunks" "$CHUNKS of ≈ $(hms "$CHUNK_SECONDS") · $CHUNK_FRAMES_TOTAL frames"
     ok "Every join on a scene cut"
@@ -412,25 +418,29 @@ plan_chunks() {
 # Splits the video at the planned joins into $PARTS/chunk-<k>.mkv and
 # checks each has its planned frames.
 split_chunks() {
-    local k got
+    local k got want
     progress "Splitting the video into $CHUNKS chunks…"
-    ffmpeg -nostdin -v error -i "$INPUT" -map 0:"$V" -c copy -f segment -segment_times "$(IFS=,; echo "${CHUNK_TIME[*]}")" \
+    # By packet number, not time: on an H.264 source, -segment_times passed
+    # over the planned keyframe to the next one.
+    ffmpeg -nostdin -v error -i "$INPUT" -map 0:"$V" -c copy -f segment -segment_frames "$(IFS=,; echo "${CHUNK_START[*]:1:CHUNKS-1}")" \
         -reset_timestamps 1 "$PARTS/chunk-%03d.mkv"
     for ((k = 0; k < CHUNKS; k++)); do
         progress "Checking chunk $((k + 1))/$CHUNKS…"
         got=$(ffprobe -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 "$(printf '%s/chunk-%03d.mkv' "$PARTS" "$k")" | wc -l)
-        (( got == CHUNK_START[k + 1] - CHUNK_START[k] )) ||
-            die "chunk $k has $got frames, planned $(( CHUNK_START[k + 1] - CHUNK_START[k] ))"
+        # The first chunk holds the packets of the frames before it too.
+        want=$(( CHUNK_START[k + 1] - (k > 0 ? CHUNK_START[k] : 0) ))
+        (( got == want )) || die "chunk $k has $got frames, planned $want"
     done
     progress ""
     ok "Split at source keyframes; every chunk has its planned frames"
 }
 
-# One chunk (`farm_job_chunk <slot> <k>`): the 2160p video command on the
-# slot, with the chunk's frame count; all but the last chunk end with the
-# VBV buffer back at 90%, the fullness the next one starts from. Without
-# the RPU: Dolby Vision goes in once the chunks are joined. The slot then
-# scores the chunk against its source (score_frames) into $FARM/<chunk>.tsv.
+# One chunk (`farm_job_chunk <slot> <k>`): ffmpeg decoding into the x265
+# CLI on the slot, with the chunk's frame count; all but the last chunk aim
+# to end with the VBV buffer back at 90%, the fullness the next one starts
+# from. Without the RPU: Dolby Vision goes in once the chunks are joined.
+# The slot then scores the chunk against its source (score_frames) into
+# $FARM/<chunk>.tsv.
 # A chunk's first frame has no predecessor for VMAF's motion or XPSNR's
 # temporal term: about 1 VMAF lower and XPSNR higher there than in one
 # pass over the film, on one frame per chunk.
@@ -446,7 +456,11 @@ farm_job_chunk() {
         cli+=("$arg")
     done
     [[ -n ${SLOT_POOLS[i]} ]] && cli+=(--pools "${SLOT_POOLS[i]}")
-    (( k < CHUNKS - 1 )) && end="--vbv-end 0.9"
+    # Over the last 5 s only: x265 steers toward the end fullness from frame
+    # --vbv-end-fr-adj (a fraction of --frames), by default the first, and
+    # a whole chunk near the VBV cap then came out 40% smaller.
+    (( k < CHUNKS - 1 )) &&
+        end="--vbv-end 0.9 --vbv-end-fr-adj $(awk -v n="$frames" -v r="$FPS" 'BEGIN { a = 1 - 5 * r / n; printf "%.3f", (a > 0 ? a : 0) }')"
     slot_put "$i" "$PARTS/$name.mkv" "$name.mkv" || return
     slot_run "$i" "$(
         printf 'set -euo pipefail\n'
@@ -544,7 +558,7 @@ farm_encode_video() {
     if [[ -n $DRY_RUN ]]; then
         item "Chunks of ≈ $(hms "$CHUNK_SECONDS") joined at scene cuts, one x265 per slot:"
         for i in "${!SLOT_HOST[@]}"; do setting "${SLOT_NAME[i]}" "x265 $PRESET CRF $SELECTED_CRF ${SLOT_POOLS[i]:+--pools ${SLOT_POOLS[i]} }${SLOT_ARM[i]:+(no asm) }${WRAP[${SLOT_HOST[i]}]:+under ${WRAP[${SLOT_HOST[i]}]}}"; done
-        [[ -n $DV_PROFILE ]] && setting "Dolby Vision" "dovi_tool inject-rpu on the joined stream"
+        [[ -n ${DV_PROFILE:-} ]] && setting "Dolby Vision" "dovi_tool inject-rpu on the joined stream"
         return 0
     fi
     plan_chunks
@@ -569,7 +583,7 @@ farm_encode_video() {
         rm -f "$(printf '%s/chunk-%03d' "$PARTS" "$k")".{hevc,mkv}
     done
     progress ""
-    if [[ -n $DV_PROFILE ]]; then
+    if [[ -n ${DV_PROFILE:-} ]]; then
         progress "Putting the Dolby Vision RPU in…"
         dovi_tool inject-rpu -i "$VIDEO_HEVC" --rpu-in "$RPU" -o "$VIDEO_HEVC.dv" >/dev/null && mv -f "$VIDEO_HEVC.dv" "$VIDEO_HEVC"
         progress ""

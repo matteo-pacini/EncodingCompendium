@@ -2,8 +2,8 @@
 # with the calibration's VMAF options and filters, pooled into one VMAF NEG,
 # CAMBI and XPSNR for the film, set beside the calibration's prediction,
 # then stored as FULL_* global tags and in <input>.analysis. Opt-in on the
-# single-host scripts (--score); hevc-farm.sh always scores, a 2160p video
-# chunk by chunk on the slot that encoded it. Sourced by the hevc-*.sh entry
+# single-host scripts (--score); hevc-farm.sh always scores, chunk by
+# chunk on the slot that encoded it. Sourced by the hevc-*.sh entry
 # scripts.
 
 # Scores encode $1 (its first video stream) against stream $3 of reference
