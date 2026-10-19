@@ -110,63 +110,23 @@ write_tags_xml() {
     } >"$1"
 }
 
-# Sets PARTIAL_FILE, V_OUT_LANG, A_TITLE and TOTAL_FRAMES, and writes the
-# tags XML into WORK.
+# Sets V_OUT_LANG, A_TITLE and TOTAL_FRAMES, and writes the tags XML into
+# WORK.
 prepare_output() {
     A_TITLE="$(probe ".streams[$A].profile // .streams[$A].codec_name" | tr '[:lower:]' '[:upper:]') ${A_LAYOUT%%(*}"
     V_OUT_LANG=${FIX_V_LANG:-${V_LANG:-und}}
-    PARTIAL_FILE="${OUTPUT%.mkv}.partial.mkv"
     TAGS_XML="$WORK/tags.xml"
     write_tags_xml "$TAGS_XML"
-    COVER_ARGS=()
     # From duration × frame rate, not the NUMBER_OF_FRAMES tag: remuxers can
     # carry that tag over unchanged from a longer source.
     TOTAL_FRAMES=$(awk -v d="$DURATION" -v r="$FPS" 'BEGIN { printf "%.0f", d * r }')
 }
 
-# Sets MAPS and STREAM_OPTS (ffmpeg) for: video, stereo AAC, the original
-# audio copied, and every subtitle; registers PARTIAL_FILE for cleanup; and
-# extracts cover art into WORK for finalize_output.
-prepare_ffmpeg_mux() {
-    local i s sub_lang sub_title sub_disposition c name mime
-
-    MAPS=(-map 0:"$V" -map 0:"$A" -map 0:"$A")
-    STREAM_OPTS=(
-        -metadata:s:v:0 "language=$V_OUT_LANG" -metadata:s:v:0 "title=HEVC Main10 · CRF $SELECTED_CRF"
-        -metadata:s:a:0 "language=$A_LANG" -metadata:s:a:0 "title=Stereo · AAC $STEREO_BITRATE"
-        -metadata:s:a:1 "language=$A_LANG" -metadata:s:a:1 "title=$A_TITLE"
-        -disposition:v:0 default -disposition:a:0 default -disposition:a:1 0
-    )
-    for i in "${!SUB_STREAMS[@]}"; do
-        s=${SUB_STREAMS[i]}
-        MAPS+=(-map 0:"$s")
-        sub_lang=$(probe ".streams[$s].tags.language")
-        sub_title=$(probe ".streams[$s].tags.title")
-        # Default is cleared so no subtitle is auto-selected; forced is kept.
-        sub_disposition=0
-        [[ $(probe ".streams[$s].disposition.forced") == 1 ]] && sub_disposition=forced
-        STREAM_OPTS+=(-metadata:s:s:"$i" "language=${sub_lang:-und}" -disposition:s:"$i" "$sub_disposition")
-        [[ -n $sub_title ]] && STREAM_OPTS+=(-metadata:s:s:"$i" "title=$sub_title")
-    done
-
-    # Registered for cleanup only when this run actually writes it.
-    [[ -n $DRY_RUN ]] || PARTIAL=$PARTIAL_FILE
-
-    # Cover art is added back as Matroska attachments by mkvpropedit, which
-    # keeps it out of the ffmpeg stream mapping (-c:v would re-encode it).
-    for c in "${COVER_STREAMS[@]}"; do
-        name=$(probe ".streams[$c].tags.filename // \"cover-$c.$(probe ".streams[$c].codec_name")\"")
-        mime=$(probe ".streams[$c].tags.mimetype // \"image/$(probe ".streams[$c].codec_name")\"")
-        ffmpeg -nostdin -v error -y -i "$INPUT" -map 0:"$c" -c copy -f image2 "$WORK/$name"
-        COVER_ARGS+=(--attachment-name "$name" --attachment-mime-type "$mime" --add-attachment "$WORK/$name")
-    done
-}
-
-# Sets the segment title, global tags, cover art and fresh track statistics
-# on PARTIAL_FILE, then moves it to OUTPUT.
+# Sets the segment title, global tags and fresh track statistics on
+# PARTIAL_FILE, then moves it to OUTPUT.
 finalize_output() {
     run mkvpropedit -q "$PARTIAL_FILE" --edit info --set "title=$MOVIE_TITLE" --tags global:"$TAGS_XML" \
-        "${COVER_ARGS[@]}" --add-track-statistics-tags
+        --add-track-statistics-tags
     run mv "$PARTIAL_FILE" "$OUTPUT"
 
     if [[ -n $DRY_RUN ]]; then

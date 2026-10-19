@@ -45,12 +45,6 @@ section "0 · Requirements"
 ###############################################################################
 
 profile_requirements
-# The chunks' x265 CLI and the mux of lib/parts.sh, which the 2160p
-# profile requires itself.
-if [[ $PROFILE == 1080p-sdr ]]; then
-    require_tool mkvmerge --version
-    require_x265_cli
-fi
 require_presets
 require_sampling
 require_farm_ref

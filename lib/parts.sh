@@ -1,8 +1,8 @@
 # Section 4 in parts: the video as a raw HEVC stream from the x265 CLI and
 # the stereo track as a file of its own, then one mkvmerge mux with the
-# source's audio, subtitles, chapters and attachments. hevc-2160p-hdr.sh
-# always encodes this way, hevc-farm.sh at both resolutions. Sourced before
-# the profile.
+# source's audio, subtitles, chapters and attachments. Every hevc-*.sh
+# script encodes this way (hevc-farm.sh with the video in chunks). Sourced
+# before the profile.
 
 # X265_PARAMS (what the calibration measured) as x265 CLI options.
 x265_cli_args() {
@@ -58,6 +58,43 @@ encode_stereo() {
         run_time_step 0 "$DURATION" ffmpeg -nostdin -hide_banner -v error -nostats -progress pipe:1 "${STEREO_ARGS[@]}"
         clear_block
         ok "$(human_bytes "$(stat -c %s "$STEREO_MKA")")"
+    fi
+    return 0
+}
+
+# `encode_video [x265 options…]`: the video into VIDEO_HEVC, ffmpeg decoding
+# into the x265 CLI with X265_CLI and the profile's own options.
+encode_video() {
+    heading "Video"
+    # passthrough: y4m is constant rate, and on millisecond Matroska timestamps
+    # ffmpeg would duplicate frames to keep it, putting a Dolby Vision RPU out
+    # of step.
+    DECODE_ARGS=(-i "$INPUT" -map 0:"$V" "${VF[@]}" -fps_mode passthrough -pix_fmt yuv420p10le -strict -1 -f yuv4mpegpipe -)
+    ENCODE=(x265 --input - --y4m --preset "$PRESET" --crf "$SELECTED_CRF" --output-depth 10 --profile main10
+        "${X265_CLI[@]}" "$@" --log-level error --no-progress -o "$VIDEO_HEVC")
+    if [[ -n $DRY_RUN ]]; then
+        printf '\n  %s$%s' "$CYAN" "$RESET"
+        printf ' %q' ffmpeg -nostdin -hide_banner -v error -stats "${DECODE_ARGS[@]}"
+        printf ' \\\n    |'
+        printf ' %q' "${ENCODE[@]}"
+        printf '\n'
+    else
+        video_pipe() {
+            # ffmpeg's stdout carries the pictures, so its progress goes to fd 3;
+            # render_progress draws on fd 4, the terminal, as its inherited stdout
+            # is that same pipe into x265.
+            { ffmpeg -nostdin -hide_banner -v error -nostats -progress pipe:3 "${DECODE_ARGS[@]}" 3> >(render_progress >&4) |
+                "${ENCODE[@]}"; } 4>&1
+            # Lets the progress line finish drawing; whether $! names the process
+            # substitution depends on the bash version, so a failed wait is fine.
+            wait $! 2>/dev/null || true
+        }
+        [[ -t 1 ]] && printf '  %sCtrl+Z pauses (fg resumes) · Ctrl+C aborts%s\n' "$DIM" "$RESET"
+        ENCODE_START=$SECONDS
+        PROGRESS_SIZE_FILE=$VIDEO_HEVC
+        background video_pipe
+        ENCODE_SECONDS=$((SECONDS - ENCODE_START))
+        unset PROGRESS_SIZE_FILE
     fi
     return 0
 }

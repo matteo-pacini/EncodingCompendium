@@ -17,14 +17,15 @@
 # SAMPLE_PERCENT (default 3) is the share of the film it calibrates on, in
 # samples of SAMPLE_DURATION seconds (default 20).
 #
-# Requires ffmpeg-full, jq and mkvtoolnix (`nix develop path:./nix`); section
-# 0 checks them and exits with status 1 if anything is missing.
+# Requires ffmpeg-full, jq, mkvtoolnix and the x265 CLI (`nix develop
+# path:./nix`); section 0 checks them and exits with status 1 if anything
+# is missing.
 # Set NO_COLOR=1 to disable colours.
 
 set -euo pipefail
 
 LIB="$(dirname "$(readlink -f "$0")")/lib"
-for lib in ui util requirements probe audio calibrate mux score profile-1080p-sdr; do
+for lib in ui util requirements probe audio calibrate mux score parts profile-1080p-sdr; do
     # shellcheck source=/dev/null
     source "$LIB/$lib.sh"
 done
