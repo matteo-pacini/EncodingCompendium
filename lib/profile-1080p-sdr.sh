@@ -1,8 +1,8 @@
-# The 1080p SDR profile: Blu-ray remux to HEVC Main10 for the Shield's
-# direct play. Sourced by hevc-1080p-sdr.sh and hevc-farm.sh after the
+# The 1080p SDR profile: Blu-ray remux to HEVC Main10 within Level 4.1
+# Main tier. Sourced by hevc-1080p-sdr.sh and hevc-farm.sh after the
 # other lib/ files; each function is one section's profile-specific part.
 
-PROFILE_TARGET="NVIDIA Shield TV Pro direct play"
+PROFILE_TARGET="HEVC Main10 · Level 4.1 Main · 20 Mb/s VBV"
 
 # PRESETS, sampling and VMAF defaults, before section 0.
 profile_defaults() {
@@ -60,7 +60,7 @@ profile_settings() {
     #################
 
     # Level 4.1 Main tier caps the bitrate at 20 Mb/s; the VBV keeps peaks inside
-    # it so the stream is decodable by any 4.1 decoder, not just the Shield.
+    # it so any Level 4.1 decoder can play the stream.
     LEVEL="level-idc=41:vbv-maxrate=20000:vbv-bufsize=20000"
     COLOUR="colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited:chromaloc=0"
     AQ="aq-mode=3:aq-strength=0.8"

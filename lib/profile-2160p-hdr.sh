@@ -1,9 +1,9 @@
 # The 2160p HDR profile: UHD Blu-ray remux (HDR10, optionally Dolby Vision)
-# to HEVC Main10 HDR10, plus Dolby Vision 8.1, for the Shield on an LG CX.
+# to HEVC Main10 HDR10, plus Dolby Vision 8.1, within Level 5.1 High tier.
 # Sourced by hevc-2160p-hdr.sh after the other lib/ files; each function
 # is one section's profile-specific part.
 
-PROFILE_TARGET="NVIDIA Shield TV Pro + LG CX direct play"
+PROFILE_TARGET="HEVC Main10 HDR10 · Level 5.1 High · 160 Mb/s VBV"
 
 # PRESETS, sampling and VMAF defaults, before section 0.
 profile_defaults() {
@@ -119,7 +119,7 @@ profile_analysis() {
     report_subtitles
     report_chapters
 
-    [[ -n $HAS_HDR10PLUS ]] && WARNINGS+=("HDR10+ is dropped: neither the Shield nor the LG CX supports it, and an HDR10+-only file would make Jellyfin transcode.")
+    [[ -n $HAS_HDR10PLUS ]] && WARNINGS+=("HDR10+ dynamic metadata is dropped: the output carries HDR10 static metadata, and Dolby Vision 8.1 when the source has it.")
     [[ $DV_EL == 1 ]] && WARNINGS+=("Dual-layer Dolby Vision (profile $DV_PROFILE): the enhancement layer is discarded when converting to profile 8.1 — usually invisible, but a full enhancement layer (FEL) can carry real picture data.")
     [[ -n $DV_PROFILE && -z $MASTER_DISPLAY ]] && WARNINGS+=("Dolby Vision without mastering display metadata: x265 needs it for profile 8.1.")
     [[ -z $DV_PROFILE && -z $MASTER_DISPLAY ]] && WARNINGS+=("No mastering display metadata: the HDR10 encode will carry none either.")
@@ -145,9 +145,8 @@ profile_settings() {
 
     # PRESETS defaults to CRF 16–20: HDR needs a lower CRF than SDR for the same
     # look (doom9: about 2 lower with hdr10-opt).
-    # Level 5.1 High tier, which the Shield's decoder advertises; Jellyfin
-    # transcodes anything above the advertised level. The VBV keeps peaks within
-    # the level's 160 Mb/s, and Dolby Vision requires a VBV anyway.
+    # Level 5.1 High tier: its 160 Mb/s covers UHD Blu-ray video peaks. The VBV
+    # keeps peaks within it, and Dolby Vision requires a VBV anyway.
     LEVEL="level-idc=51:high-tier=1:vbv-maxrate=160000:vbv-bufsize=160000"
     # x265's chromaloc numbering for ffprobe's chroma_location names.
     case $V_CHROMALOC in

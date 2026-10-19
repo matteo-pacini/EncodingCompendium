@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
-# Analyse a 1080p SDR Blu-ray remux and convert it to HEVC Main10 that the
-# NVIDIA Shield TV Pro can direct-play (no video or audio transcoding on the
-# Shield or on a media server).
+# Analyse a 1080p SDR Blu-ray remux and convert it to HEVC Main10 within
+# Level 4.1 Main tier (20 Mb/s VBV), so any decoder of that level plays it.
 #
 # Usage: hevc-1080p-sdr.sh [--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>
 #

@@ -4,10 +4,10 @@ My encoding notebook - writing things down for reference.
 
 # Scripts
 
-Bash scripts that convert Blu-ray remuxes to HEVC Main10 for direct play on an NVIDIA Shield TV Pro (2160p on an LG CX):
+Bash scripts that convert Blu-ray remuxes to HEVC Main10 within an HEVC level, so any decoder of that level plays them:
 
-- `hevc-1080p-sdr.sh`: 1080p SDR.
-- `hevc-2160p-hdr.sh`: 2160p HDR10, plus Dolby Vision 8.1 when the source has Dolby Vision (profile 7 is converted).
+- `hevc-1080p-sdr.sh`: 1080p SDR, Level 4.1 Main tier (20 Mb/s VBV).
+- `hevc-2160p-hdr.sh`: 2160p HDR10, Level 5.1 High tier (160 Mb/s VBV), plus Dolby Vision 8.1 when the source has Dolby Vision (profile 7 is converted).
 - `hevc-farm.sh`: either of the above, spread over several hosts by SSH.
 
 Each run probes the source and crops black bars. It then calibrates the CRF on samples of the film: per preset, the highest CRF that passes VMAF NEG mean ≥ 95, 1%-low ≥ 90 and CAMBI ≤ 2.5 in every half second. It cuts the worst sample for a look, and asks before encoding. The output has the video, a stereo AAC track, the original audio, subtitles and chapters, with the calibration in its tags. Everything goes in a folder named after the film beside the input. Measurements are cached there in a `.analysis` file, so a rerun only encodes what is new.

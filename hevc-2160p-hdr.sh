@@ -2,8 +2,8 @@
 #
 # Analyse a 2160p HDR UHD Blu-ray remux (HDR10, optionally Dolby Vision) and
 # convert it to HEVC Main10 HDR10 — plus Dolby Vision profile 8.1 when the
-# source has Dolby Vision — that the NVIDIA Shield TV Pro can direct-play on
-# an LG CX. HDR is kept as-is: no tone mapping.
+# source has Dolby Vision — within Level 5.1 High tier (160 Mb/s VBV), so any
+# decoder of that level plays it. HDR is kept as-is: no tone mapping.
 #
 # Usage: hevc-2160p-hdr.sh [--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>
 #
