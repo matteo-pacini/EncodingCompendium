@@ -13,7 +13,7 @@
 # both metrics; XPSNR's inputs are padded as in score_xpsnr.
 score_frames() {
     local out=$4 pad="pad=ceil((iw+1)/64)*64:ih"
-    ffmpeg -nostdin -v error "${@:5}" -i "$1" -i "$2" -lavfi "[0:v:0]$DIST_FILTER,split[d1][d2];[1:$3]$REF_FILTER,split[r1][r2];[d1][r1]libvmaf=$VMAF_OPTIONS:n_threads=$(nproc):log_fmt=json:log_path=$out.json[v];[d2]$pad[d3];[r2]$pad[r3];[d3][r3]xpsnr=stats_file=$out.xpsnr[x]" \
+    ffmpeg -nostdin -v error "${@:5}" -i "$1" -i "$2" -lavfi "[0:v:0]${DIST_FILTER},split[d1][d2];[1:$3]${REF_FILTER},split[r1][r2];[d1][r1]libvmaf=$VMAF_OPTIONS:n_threads=$(nproc):log_fmt=json:log_path=$out.json[v];[d2]${pad}[d3];[r2]${pad}[r3];[d3][r3]xpsnr=stats_file=$out.xpsnr[x]" \
         -map '[v]' -map '[x]' -f null -
     jq -r '.frames[].metrics | "\(.vmaf)\t\(.cambi_full_reference)"' "$out.json" >"$out.vmaf"
     awk '$1 == "n:" { print $5 }' "$out.xpsnr" | paste "$out.vmaf" - >"$out"
@@ -126,6 +126,7 @@ report_score() {
     (( n == 0 )) || TAGS+=("FULL_CAMBI_OVER_LIMIT=$where; worst first: $(IFS=,; echo "${places[*]}" | sed 's/,/, /g')")
     write_tags_xml "$TAGS_XML"
     mkvpropedit -q "$OUTPUT" --tags global:"$TAGS_XML"
+    # shellcheck disable=SC2004 # CACHE is associative: the key is a string
     CACHE[$PRESET@$SELECTED_CRF.full]=$(printf '%s\t' "$(date '+%Y-%m-%d %H:%M')" "$FULL_FRAMES" "$FULL_NEG" "$FULL_LOW" "$FULL_CAMBI" "$FULL_XPSNR")
     save_analysis
     ok "Stored as FULL_* tags and in $(basename "$ANALYSIS")"

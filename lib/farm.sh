@@ -162,7 +162,7 @@ farm_schedule() {
                 if [[ -n ${FARM_IS_EXTRA[$id]:-} ]]; then FARM_AHEAD=$((FARM_AHEAD + 1)); else FARM_DONE=$((FARM_DONE + 1)); fi
                 # Whole seconds keep the speeds bash arithmetic; jobs last minutes.
                 SLOT_FR[i]=$(( ${SLOT_FR[i]:-0} + $(job_frames "$id") ))
-                SLOT_SEC[i]=$(( ${SLOT_SEC[i]:-0} + ${EPOCHSECONDS} - ${SLOT_START[i]%.*} ))
+                SLOT_SEC[i]=$(( ${SLOT_SEC[i]:-0} + EPOCHSECONDS - ${SLOT_START[i]%.*} ))
                 continue
             fi
             FARM_TRIES[$id]=$(( ${FARM_TRIES[$id]:-0} + 1 ))
@@ -331,7 +331,8 @@ farm_calibrate() {
         for i in "${!PRESET_NAMES[@]}"; do
             preset=${PRESET_NAMES[i]}
             [[ -n ${stopped[$preset]:-} ]] && continue
-            local crfs=(${PRESET_CRFS[i]})
+            local -a crfs
+            read -r -a crfs <<<"${PRESET_CRFS[i]}"
             while (( ${next[$preset]:-0} < ${#crfs[@]} )); do
                 crf=${crfs[${next[$preset]:-0}]}
                 if [[ -z ${CACHE[$preset@$crf]:-} ]]; then
@@ -525,7 +526,9 @@ check_chunks_done() {
         fi
     done
     progress ""
-    (( ${#CHUNK_DONE[@]} == 0 )) || ok "From earlier runs, as recorded: chunk $(ranges $(for k in "${!CHUNK_DONE[@]}"; do echo $((k + 1)); done))"
+    local kept=()
+    for k in "${!CHUNK_DONE[@]}"; do kept+=($((k + 1))); done
+    (( ${#kept[@]} == 0 )) || ok "From earlier runs, as recorded: chunk $(ranges "${kept[@]}")"
     (( ${#lost[@]} == 0 )) || warn "Missing or changed since recorded, so encoded again: chunk $(ranges "${lost[@]}")"
 }
 
@@ -632,7 +635,7 @@ video_slots() {
 }
 
 video_total() {
-    local i frames=0 frame _ step elapsed=$(( SECONDS - FARM_VIDEO_START )) done earlier earlier_chunks
+    local i frames=0 frame _ step elapsed=$(( SECONDS - FARM_VIDEO_START )) finished earlier earlier_chunks
     for i in "${!SLOT_HOST[@]}"; do
         [[ -n ${SLOT_JOB[i]:-} ]] && read -r frame _ step 2>/dev/null <"$FARM/slot-$i.state" || continue
         # A chunk being scored is encoded.
@@ -640,9 +643,9 @@ video_total() {
         frames=$((frames + frame))
     done
     # Chunks from earlier runs (slot "-") count as done, not towards the speed.
-    read -r done earlier earlier_chunks < <(awk '{ s += $2 } $3 == "-" { e += $2; n++ } END { print s + 0, e + 0, n + 0 }' \
+    read -r finished earlier earlier_chunks < <(awk '{ s += $2 } $3 == "-" { e += $2; n++ } END { print s + 0, e + 0, n + 0 }' \
         "$FARM/video-done" 2>/dev/null || echo 0 0 0)
-    frames=$((frames + done))
+    frames=$((frames + finished))
     awk -v f="$frames" -v p="$earlier" -v t="$CHUNK_FRAMES_TOTAL" -v e="$elapsed" -v d="$((FARM_DONE + earlier_chunks))" -v n="$CHUNKS" 'BEGIN {
         r = (e > 0 ? (f - p) / e : 0)
         printf "Video · %d/%d chunks · %.1f%% · %.2f fps · ETA ", d, n, f / t * 100, r
@@ -661,19 +664,19 @@ ranges() {
 # The chunks in the queue's order, for farm_draw: farm_schedule's pending
 # list is in scope, being farm_draw's caller.
 video_detail() {
-    local i id done=() running=() retry=() next=()
-    mapfile -t done < <(awk '{ print $1 + 1 }' "$FARM/video-done" 2>/dev/null)
+    local i id finished=() running=() retry=() queued=()
+    mapfile -t finished < <(awk '{ print $1 + 1 }' "$FARM/video-done" 2>/dev/null)
     for i in "${!SLOT_HOST[@]}"; do
         [[ ${SLOT_JOB[i]:-} == chunk:* ]] && running+=($(( ${SLOT_JOB[i]#chunk:} + 1 )))
     done
     for id in "${pending[@]}"; do
-        if (( ${FARM_TRIES[$id]:-0} > 0 )); then retry+=($(( ${id#chunk:} + 1 ))); else next+=($(( ${id#chunk:} + 1 ))); fi
+        if (( ${FARM_TRIES[$id]:-0} > 0 )); then retry+=($(( ${id#chunk:} + 1 ))); else queued+=($(( ${id#chunk:} + 1 ))); fi
     done
     printf 'Chunks'
-    (( ${#done[@]} == 0 )) || printf ' · done %s' "$(ranges "${done[@]}")"
+    (( ${#finished[@]} == 0 )) || printf ' · done %s' "$(ranges "${finished[@]}")"
     (( ${#running[@]} == 0 )) || printf ' · encoding %s' "${running[*]}"
     (( ${#retry[@]} == 0 )) || printf ' · retry %s' "${retry[*]}"
-    (( ${#next[@]} == 0 )) || printf ' · next %s' "$(ranges "${next[@]}")"
+    (( ${#queued[@]} == 0 )) || printf ' · next %s' "$(ranges "${queued[@]}")"
     [[ -z ${FARM_HELD:-} ]] || printf ' (%s held for a faster slot)' "$(( ${FARM_HELD#chunk:} + 1 ))"
 }
 

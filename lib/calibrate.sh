@@ -297,7 +297,7 @@ cut_samples() {
 # before its inputs.
 score_vmaf() {
     ffmpeg -nostdin -v error "${@:4}" -i "$1" -i "$2" \
-        -lavfi "[0:v]$DIST_FILTER[d];[1:v]$REF_FILTER[r];[d][r]libvmaf=$VMAF_OPTIONS:n_threads=$(nproc):log_fmt=json:log_path=$3" -f null -
+        -lavfi "[0:v]${DIST_FILTER}[d];[1:v]${REF_FILTER}[r];[d][r]libvmaf=$VMAF_OPTIONS:n_threads=$(nproc):log_fmt=json:log_path=$3" -f null -
 }
 
 # Scores encode $1 against reference $2 with XPSNR, whose summary goes to

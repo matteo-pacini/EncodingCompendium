@@ -88,6 +88,7 @@ require_farm_ref() {
 # the master's ssh does, kills the job's process group. ssh dying does not
 # stop a remote command by itself. stdin moves to fd 3 first: bash gives a
 # background command /dev/null as its stdin.
+# shellcheck disable=SC2016 # expanded on the worker
 FARM_WATCHDOG='exec 3<&0 0</dev/null
 ( while IFS= read -r -t 2 -u 3 _ || (( $? > 128 )); do :; done; kill -TERM 0 ) >/dev/null 2>&1 &
 FARM_WATCHDOG_PID=$!

@@ -130,7 +130,7 @@ detect_crop() {
     IFS=: read -r CROP_W CROP_H CROP_X CROP_Y <<<"${CROP#crop=}"
 
     heading "Black bars"
-    for c in $(for c in "${!CROP_VOTES[@]}"; do echo "${CROP_VOTES[$c]} $c"; done | sort -rn | cut -d' ' -f2); do
+    for c in $(for v in "${!CROP_VOTES[@]}"; do echo "${CROP_VOTES[$v]} $v"; done | sort -rn | cut -d' ' -f2); do
         kv "$c" "${CROP_VOTES[$c]}/$CROP_SAMPLES samples · $(crop_aspect "$c")"
         # A crop holding at least 15% of the samples is a real framing, not a stray.
         (( CROP_VOTES[$c] * 100 >= CROP_SAMPLES * 15 )) && majors+=("$c")

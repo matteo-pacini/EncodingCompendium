@@ -90,7 +90,7 @@
       });
 
       devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell { packages = encoders pkgs; };
+        default = pkgs.mkShell { packages = encoders pkgs ++ [ pkgs.shellcheck ]; };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);

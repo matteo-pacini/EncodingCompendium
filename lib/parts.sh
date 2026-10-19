@@ -79,6 +79,7 @@ encode_video() {
         printf ' %q' "${ENCODE[@]}"
         printf '\n'
     else
+        # shellcheck disable=SC2329 # run through background, below
         video_pipe() {
             # ffmpeg's stdout carries the pictures, so its progress goes to fd 3;
             # render_progress draws on fd 4, the terminal, as its inherited stdout

@@ -1,0 +1,9 @@
+shell=bash
+external-sources=true
+# The lib/ files are sourced into one shell and share its globals, which a
+# file-by-file check reports as unused (SC2034) or unassigned (SC2153).
+disable=SC2034,SC2153
+# Deliberate idioms: ssh commands built on this host (SC2029); A && B || C
+# where C must run when A or B fails (SC2015); sed over an array joined
+# with IFS, which ${var//…} cannot do in place (SC2001).
+disable=SC2029,SC2015,SC2001
