@@ -4,6 +4,8 @@
 # over several hosts: this one and every --worker. Calibration samples run
 # on every slot at once; a 2160p video is split at scene cuts into chunks,
 # encoded on every slot and joined (a 1080p video is encoded on this host).
+# The output is then scored against the source as with --score (a 2160p
+# video chunk by chunk, on the slot that encoded it).
 #
 # Usage: hevc-farm.sh [--dry-run] [--no-local] [--worker alias[=wrapper]]… <input.mkv>
 #
@@ -22,12 +24,13 @@
 set -euo pipefail
 
 LIB="$(dirname "$(readlink -f "$0")")/lib"
-for lib in ui util requirements probe audio calibrate mux remote farm; do
+for lib in ui util requirements probe audio calibrate mux score remote farm; do
     # shellcheck source=/dev/null
     source "$LIB/$lib.sh"
 done
 
 farm_parse_args "$@"
+SCORE=1
 # PQ or HLG makes it the 2160p HDR profile, which refuses HLG itself.
 TRANSFER=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of default=nw=1:nk=1 "$INPUT" 2>/dev/null || true)
 case $TRANSFER in
@@ -73,7 +76,7 @@ profile_settings
 heading "Hosts  ${DIM}${#SLOT_HOST[@]} slots${RESET}"
 if [[ $PROFILE == 2160p-hdr ]]; then
     ENCODE_SLOTS=${#SLOT_HOST[@]}
-    item "Samples and ≈ $((CHUNK_SECONDS / 60)) min chunks, joined at scene cuts, on every slot"
+    item "Samples and ≈ $((CHUNK_SECONDS / 60)) min chunks, joined at scene cuts, on every slot; each chunk scored where it was encoded"
 else
     item "Samples on every slot; the video on $FARM_LOCAL"
 fi
@@ -105,7 +108,10 @@ if [[ $PROFILE == 2160p-hdr ]]; then
     wait "$STEREO_PID" || { cat "$WORK/stereo.log"; die "The stereo track failed"; }
     cat "$WORK/stereo.log"
     encode_mux
+    cat "$FARM"/chunk-*.tsv >"$WORK/score.tsv"
+    report_score "$WORK/score.tsv"
 else
     profile_encode
+    score_output
 fi
 profile_checks

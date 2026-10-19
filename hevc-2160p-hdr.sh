@@ -5,9 +5,12 @@
 # source has Dolby Vision — that the NVIDIA Shield TV Pro can direct-play on
 # an LG CX. HDR is kept as-is: no tone mapping.
 #
-# Usage: hevc-2160p-hdr.sh [--dry-run] <input.mkv>
+# Usage: hevc-2160p-hdr.sh [--dry-run] [--score] <input.mkv>
 #
 #   --dry-run  print the encode commands instead of running them
+#   --score    score the whole output against the source after the encode
+#              (VMAF NEG, CAMBI, XPSNR; ≈ 3 h for a 2-hour film on 16
+#              threads) and store the result in its tags and the .analysis
 #
 # PRESETS (environment) lists the x265 presets and CRFs to calibrate, as
 # "preset:crf,crf,…;preset:crf,…" (default "slow:16,17,18,19,20"); section 3 walks each
@@ -23,7 +26,7 @@
 set -euo pipefail
 
 LIB="$(dirname "$(readlink -f "$0")")/lib"
-for lib in ui util requirements probe audio calibrate mux profile-2160p-hdr; do
+for lib in ui util requirements probe audio calibrate mux score profile-2160p-hdr; do
     # shellcheck source=/dev/null
     source "$LIB/$lib.sh"
 done
@@ -70,4 +73,5 @@ section "4 · Encode${DRY_RUN:+ — dry run}"
 ###############################################################################
 
 profile_encode
+[[ -z $SCORE ]] || score_output
 profile_checks

@@ -41,6 +41,7 @@ plan_gates() {
     setting "Every scene" "1%-low ≥ $VMAF_TARGET_LOW"
     setting "Banding" "CAMBI (vs source) ≤ $CAMBI_MAX in every half second"
     setting "Efficiency" "stop at an XPSNR knee (step > ${KNEE_RATIO}× previous)"
+    [[ -z $SCORE ]] || setting "Whole film" "scored after the encode · FULL_* tags"
     (( ${#PRESET_NAMES[@]} == 1 )) ||
         setting "Preset choice" "fastest within $(awk -v t="$SIZE_TOLERANCE" 'BEGIN { print t * 100 }')% of the smallest file"
 }

@@ -429,9 +429,13 @@ split_chunks() {
 # One chunk (`farm_job_chunk <slot> <k>`): the 2160p video command on the
 # slot, with the chunk's frame count; all but the last chunk end with the
 # VBV buffer back at 90%, the fullness the next one starts from. Without
-# the RPU: Dolby Vision goes in once the chunks are joined.
+# the RPU: Dolby Vision goes in once the chunks are joined. The slot then
+# scores the chunk against its source (score_frames) into $FARM/<chunk>.tsv.
+# A chunk's first frame has no predecessor for VMAF's motion or XPSNR's
+# temporal term: about 1 VMAF lower and XPSNR higher there than in one
+# pass over the film, on one frame per chunk.
 farm_job_chunk() {
-    local i=$1 k=$2 name frames cli=() arg skip="" end="" got t0
+    local i=$1 k=$2 name frames cli=() arg skip="" end="" got
     name=$(printf 'chunk-%03d' "$k")
     frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
     farm_label "$i" "chunk $((k + 1))/$CHUNKS" "$frames"
@@ -444,23 +448,34 @@ farm_job_chunk() {
     [[ -n ${SLOT_POOLS[i]} ]] && cli+=(--pools "${SLOT_POOLS[i]}")
     (( k < CHUNKS - 1 )) && end="--vbv-end 0.9"
     slot_put "$i" "$PARTS/$name.mkv" "$name.mkv" || return
-    t0=$EPOCHSECONDS
-    slot_run "$i" "$(cat <<EOF
-set -euo pipefail
+    slot_run "$i" "$(
+        printf 'set -euo pipefail\n'
+        declare -p DIST_FILTER REF_FILTER VMAF_OPTIONS
+        declare -f score_frames
+        cat <<EOF
 echo step=encode
+start=\$SECONDS
 { ffmpeg -nostdin -v error -nostats -progress pipe:3 -i $name.mkv -map 0:v:0 $(printf '%q ' "${VF[@]}") -fps_mode passthrough \\
     -pix_fmt yuv420p10le -strict -1 -f yuv4mpegpipe - 3>&4 |
     x265 --input - --y4m --preset $PRESET --crf $SELECTED_CRF --output-depth 10 --profile main10 $(printf '%q ' "${cli[@]}") \\
         --frames $frames $end --log-level error --no-progress -o $name.hevc; } 4>&1
+echo "result=\$((SECONDS - start))"
+echo step=score
+# A raw stream has no frame rate of its own: ffmpeg would take 25 fps.
+score_frames $name.hevc $name.mkv 0 $name.tsv -nostats -progress pipe:1 -framerate $V_FPS
 rm -f $name.mkv
 EOF
-)" | farm_follow "$i" "chunk:$k"
+    )" | farm_follow "$i" "chunk:$k"
     (( PIPESTATUS[0] == 0 )) || return "${PIPESTATUS[0]}"
     slot_get "$i" "$name.hevc" "$PARTS/$name.hevc" || return
+    slot_get "$i" "$name.tsv" "$FARM/$name.tsv" || return
     slot_rm "$i" "$name.mkv"
     got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.hevc" | wc -l)
     (( got == frames )) || { rm -f "$PARTS/$name.hevc"; echo "$name.hevc has $got frames, not $frames" >&2; return 1; }
-    echo "$k $frames $i $((EPOCHSECONDS - t0))" >>"$FARM/video-done"
+    got=$(wc -l <"$FARM/$name.tsv")
+    (( got == frames )) || { rm -f "$FARM/$name.tsv"; echo "$name.tsv scores $got frames, not $frames" >&2; return 1; }
+    # Seconds of encoding, the score left out.
+    echo "$k $frames $i $(<"$FARM/jobs/chunk_$k.result")" >>"$FARM/video-done"
 }
 
 # Per slot, after the encode: its chunks, frames, speed and share.
@@ -479,9 +494,12 @@ video_slots() {
 }
 
 video_total() {
-    local i frames=0 frame _ elapsed=$(( SECONDS - FARM_VIDEO_START ))
+    local i frames=0 frame _ step elapsed=$(( SECONDS - FARM_VIDEO_START ))
     for i in "${!SLOT_HOST[@]}"; do
-        [[ -n ${SLOT_JOB[i]:-} ]] && read -r frame _ 2>/dev/null <"$FARM/slot-$i.state" && frames=$((frames + frame))
+        [[ -n ${SLOT_JOB[i]:-} ]] && read -r frame _ step 2>/dev/null <"$FARM/slot-$i.state" || continue
+        # A chunk being scored is encoded.
+        [[ $step == score ]] && frame=$(<"$FARM/slot-$i.total")
+        frames=$((frames + frame))
     done
     frames=$(( frames + $(awk '{ s += $2 } END { print s + 0 }' "$FARM/video-done" 2>/dev/null || echo 0) ))
     awk -v f="$frames" -v t="$CHUNK_FRAMES_TOTAL" -v e="$elapsed" -v d="$FARM_DONE" -v n="$CHUNKS" 'BEGIN {

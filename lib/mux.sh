@@ -94,11 +94,13 @@ confirm_encode() {
 # Writes TAGS as a Matroska tags XML file for `mkvpropedit --tags global:FILE`.
 write_tags_xml() {
     local tag name value
+    # Kept for a rewrite: report_score adds tags hours after the encode.
+    DATE_ENCODED=${DATE_ENCODED:-$(date -u '+%Y-%m-%d')}
     {
         echo '<?xml version="1.0" encoding="UTF-8"?>'
         echo '<!DOCTYPE Tags SYSTEM "matroskatags.dtd">'
         echo '<Tags><Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets>'
-        for tag in "${TAGS[@]}" "DATE_ENCODED=$(date -u '+%Y-%m-%d')"; do
+        for tag in "${TAGS[@]}" "DATE_ENCODED=$DATE_ENCODED"; do
             name=${tag%%=*} value=${tag#*=}
             # Quoted replacements: bash 5.2+ expands a bare & to the match.
             value=${value//&/"&amp;"} value=${value//</"&lt;"} value=${value//>/"&gt;"}

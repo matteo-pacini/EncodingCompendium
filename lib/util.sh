@@ -5,11 +5,19 @@ hms() { awk -v s="$1" 'BEGIN { printf "%d:%02d:%02d", s / 3600, (s % 3600) / 60,
 human_bytes() { awk -v b="$1" 'BEGIN { split("B KiB MiB GiB TiB", u); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ } printf "%.2f %s", b, u[i] }'; }
 kbps() { awk -v b="$1" 'BEGIN { if (b == "" || b == "null") print "unknown"; else printf "%.0f kb/s", b / 1000 }'; }
 
-# Parses `[--dry-run] <input.mkv>` into DRY_RUN and INPUT.
+# Parses `[--dry-run] [--score] <input.mkv>` into DRY_RUN, SCORE and INPUT.
 parse_args() {
-    DRY_RUN=""
-    [[ ${1:-} == --dry-run ]] && { DRY_RUN=1; shift; }
-    (($# == 1)) || die "Usage: $(basename "$0") [--dry-run] <input.mkv>"
+    DRY_RUN="" SCORE=""
+    while (($#)); do
+        case $1 in
+            --dry-run) DRY_RUN=1 ;;
+            --score) SCORE=1 ;;
+            -*) die "Unknown option $1" ;;
+            *) break ;;
+        esac
+        shift
+    done
+    (($# == 1)) || die "Usage: $(basename "$0") [--dry-run] [--score] <input.mkv>"
     INPUT=$1
     [[ -f $INPUT ]] || die "No such file: $INPUT"
 }
