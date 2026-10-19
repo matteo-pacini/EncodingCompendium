@@ -717,10 +717,11 @@ farm_encode_video() {
     fi
     video_slots
     progress "Joining the chunks…"
+    # The chunks stay until mux_parts removes PARTS, for a run cut short
+    # while joining or muxing to go on from.
     : >"$VIDEO_HEVC"
     for ((k = 0; k < CHUNKS; k++)); do
         cat "$(printf '%s/chunk-%03d.hevc' "$PARTS" "$k")" >>"$VIDEO_HEVC"
-        rm -f "$(printf '%s/chunk-%03d' "$PARTS" "$k")".{hevc,mkv}
     done
     progress ""
     if [[ -n ${DV_PROFILE:-} ]]; then
