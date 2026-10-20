@@ -19,6 +19,10 @@
 # PRESETS (environment) lists the x265 presets and CRFs to calibrate, as
 # "preset:crf,crf,…;preset:crf,…" (default "slow:18,19,20"); section 3 walks each
 # preset's CRFs and keeps the fastest preset within 10% of the smallest file.
+# VMAF_TARGET_MEAN and VMAF_TARGET_LOW (defaults 96 and 94) are the VMAF NEG
+# gates: the pooled mean, and the 1%-low pooled and in every scene.
+# QCOMP (default 0.7, x265's own is 0.6) is x265's qcomp: higher keeps more
+# bits in complex, grainy scenes.
 # SAMPLE_PERCENT (default 3) is the share of the film it calibrates on, in
 # samples of SAMPLE_DURATION seconds (default 20).
 #

@@ -1,5 +1,5 @@
 # Output naming, track metadata, global tags, finalising the encoded file
-# and the section 5 result checks. Sourced by the hevc-*.sh entry scripts.
+# and the section 5 result checks. Sourced by the entry scripts.
 
 RELEASE_GROUP="Zi0P4tch0"
 ORIGINAL_MEDIA_TYPE="Blu-ray"
@@ -57,7 +57,7 @@ plan_output() {
         "TITLE=$MOVIE_TITLE"
         "ENCODED_BY=$RELEASE_GROUP"
         "ORIGINAL_MEDIA_TYPE=$ORIGINAL_MEDIA_TYPE"
-        "ENCODER_SETTINGS=libx265 preset=$PRESET crf=$SELECTED_CRF $X265_PARAMS"
+        "ENCODER_SETTINGS=$ENCODER_NAME preset=$PRESET crf=$SELECTED_CRF $ENCODER_PARAMS"
         "CALIBRATION_DATE=$ANALYSIS_CREATED"
         "CALIBRATION_SAMPLES=$CALIBRATION_SAMPLES × $SAMPLE_DURATION s ($SAMPLE_PERCENT% of the film)"
         "CALIBRATION_VMAF_NEG_MEAN=$(printf '%.2f' "${fields[1]}")"
@@ -209,7 +209,7 @@ report_result() {
     # so allow a couple of frames either way.
     check_near "Frame count" "$TOTAL_FRAMES" "$out_frames" 2
     check_near "Duration (s)" "$(printf '%.2f' "$DURATION")" "$(printf '%.2f' "$(out_probe .format.duration)")" 0.2
-    check "Video" "hevc Main 10 ${CROP_W}x${CROP_H}" "$(out_probe '.streams[0] | "\(.codec_name) \(.profile) \(.width)x\(.height)"')"
+    check "Video" "$VIDEO_CODEC ${CROP_W}x${CROP_H}" "$(out_probe '.streams[0] | "\(.codec_name) \(.profile) \(.width)x\(.height)"')"
     check "Audio" "aac stereo default · $(probe ".streams[$A].codec_name") $A_LAYOUT" \
         "$(out_probe '[.streams[] | select(.codec_type == "audio")] | "\(.[0].codec_name) \(.[0].channel_layout) \(if .[0].disposition.default == 1 then "default" else "not default" end) · \(.[1].codec_name) \(.[1].channel_layout)"')"
     check "Subtitles" "${#SUB_STREAMS[@]}" "$(out_probe '[.streams[] | select(.codec_type == "subtitle")] | length')"

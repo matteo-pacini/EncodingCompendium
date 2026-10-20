@@ -9,8 +9,8 @@
 #
 # Slots, one per NUMA node of each host (indexed together): SLOT_HOST,
 # SLOT_NAME, SLOT_CPUS (a CPU list to pin to, or empty), SLOT_POOLS (x265
-# --pools for that node, or empty) and SLOT_ARM (1 when x265 must not be
-# given asm=avx512).
+# --pools for that node, or empty) and SLOT_ARM (1 on an ARM host, where
+# x265 must not be given asm=avx512).
 
 FARM_LOCAL=$(hostname -s)
 FARM_RDIR="hevc-farm/$FARM_LOCAL-$$"
@@ -18,12 +18,13 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o Compression=no -o ServerAlive
     -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/hevc-farm-%C" -o ControlPersist=60)
 
 # Parses `[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>]
-# [--no-local] [--worker alias[=wrapper]]… <input.mkv>` into DRY_RUN, YES,
-# START_AT and STOP_AT (epoch seconds), NO_LOCAL, INPUT, WORKERS and WRAP
-# (alias → wrapper command, which every job on that host runs under).
+# [--codec hevc|av1] [--no-local] [--worker alias[=wrapper]]… <input.mkv>`
+# into DRY_RUN, YES, START_AT and STOP_AT (epoch seconds), CODEC (default
+# hevc), NO_LOCAL, INPUT, WORKERS and WRAP (alias → wrapper command, which
+# every job on that host runs under).
 farm_parse_args() {
-    local start="" stop="" usage="[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>] [--no-local] [--worker alias[=wrapper]]… <input.mkv>"
-    DRY_RUN="" YES="" START_AT="" STOP_AT="" NO_LOCAL="" WORKERS=()
+    local start="" stop="" usage="[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>] [--codec hevc|av1] [--no-local] [--worker alias[=wrapper]]… <input.mkv>"
+    DRY_RUN="" YES="" START_AT="" STOP_AT="" CODEC=hevc NO_LOCAL="" WORKERS=()
     declare -gA WRAP=()
     while (($#)); do
         case $1 in
@@ -31,6 +32,7 @@ farm_parse_args() {
             --yes) YES=--yes ;;
             --start-at) (($# >= 2)) || die "--start-at needs a time"; start=$2; shift ;;
             --stop-at) (($# >= 2)) || die "--stop-at needs a time"; stop=$2; shift ;;
+            --codec) (($# >= 2)) || die "--codec needs hevc or av1"; CODEC=$2; shift ;;
             --no-local) NO_LOCAL=1 ;;
             --worker) (($# >= 2)) || die "--worker needs alias[=wrapper]"; add_worker "$2"; shift ;;
             --worker=*) add_worker "${1#--worker=}" ;;
@@ -42,6 +44,7 @@ farm_parse_args() {
     (($# == 1)) || die "Usage: $(basename "$0") $usage"
     INPUT=$1
     [[ -f $INPUT ]] || die "No such file: $INPUT"
+    [[ $CODEC == hevc || $CODEC == av1 ]] || die "--codec $CODEC: hevc or av1"
     [[ ${#WORKERS[@]} -gt 0 || -z $NO_LOCAL ]] || die "--no-local needs at least one --worker"
     [[ -z $start ]] || START_AT=$(parse_when --start-at "$start" "$EPOCHSECONDS") || exit 1
     if [[ -n $stop ]]; then
@@ -157,7 +160,8 @@ slot_rm() {
     fi
 }
 
-# What a host runs and has, as key=value lines. Run inside the tools.
+# What a host runs and has, as key=value lines, the encoder's from
+# encoder_probe_script. Run inside the tools.
 probe_script() {
     cat <<'EOF'
 set -uo pipefail
@@ -170,41 +174,36 @@ else
     echo "cpu=$(sysctl -n machdep.cpu.brand_string)"
 fi
 echo "threads=$(getconf _NPROCESSORS_ONLN)"
-echo "x265=$(readlink -f "$(command -v x265)")"
 echo "ffmpeg=$(readlink -f "$(command -v ffmpeg)")"
-echo "x265_version=$(x265 --version 2>&1 | grep -o 'version [^ ]*' | head -1)"
 echo "ffmpeg_version=$(ffmpeg -version | head -1 | cut -d' ' -f3)"
 echo "free=$(df -Pk "$HOME" | awk 'NR == 2 { print $4 * 1024 }')"
-asm=""; [[ $arch == x86_64 ]] && asm="--asm avx512"
-echo "simd=$(ffmpeg -nostdin -v error -f lavfi -i testsrc2=s=320x180:d=0.04 -pix_fmt yuv420p10le -strict -1 -f yuv4mpegpipe - |
-    x265 --input - --y4m --preset ultrafast --output-depth 10 $asm --log-level info -o /dev/null 2>&1 |
-    sed -n 's/.*using cpu capabilities: //p' | head -1)"
 # Listed once and searched after: grep -q quitting early would end ffmpeg on
 # SIGPIPE, which pipefail reports as a failure.
 missing="" filters=$(ffmpeg -hide_banner -filters 2>/dev/null) encoders=$(ffmpeg -hide_banner -encoders 2>/dev/null)
 for f in libvmaf xpsnr setparams crop pad scale; do grep -qw "$f" <<<"$filters" || missing+="$f "; done
-grep -qw libx265 <<<"$encoders" || missing+="libx265 "
-echo "missing=$missing"
 EOF
+    encoder_probe_script
+    # shellcheck disable=SC2016 # expanded on the probed host
+    echo 'echo "missing=$missing"'
 }
 
 # Probes this host and every worker, prints one requirement line per host
 # and fills the slot arrays. A worker that is unreachable, has no Nix, lacks
 # a filter or runs other tool builds than this host fails its line.
 require_workers() {
-    local host out rc key value system cpu threads x265 ffmpeg x265v ffmpegv free simd missing nodes n k problem slots
-    local local_system local_x265 local_ffmpeg
+    local host out rc key value system cpu threads encoder ffmpeg encoderv ffmpegv free simd missing nodes n k problem slots
+    local local_system local_encoder local_ffmpeg
     declare -gA PROBE=()
     SLOT_HOST=() SLOT_NAME=() SLOT_CPUS=() SLOT_POOLS=() SLOT_ARM=() SLOT_DOWN=()
     for host in "$FARM_LOCAL" "${WORKERS[@]}"; do
         progress "Probing $host…"
         out=$(host_run "$host" "" "$(probe_script)" 2>&1) && rc=0 || rc=$?
         progress ""
-        system="" cpu="" threads="" x265="" ffmpeg="" x265v="" ffmpegv="" free="" simd="" missing="" nodes=()
+        system="" cpu="" threads="" encoder="" ffmpeg="" encoderv="" ffmpegv="" free="" simd="" missing="" nodes=()
         while IFS='=' read -r key value; do
             case $key in
                 system) system=$value ;; cpu) cpu=$value ;; threads) threads=$value ;;
-                x265) x265=$value ;; ffmpeg) ffmpeg=$value ;; x265_version) x265v=$value ;;
+                encoder) encoder=$value ;; ffmpeg) ffmpeg=$value ;; encoder_version) encoderv=$value ;;
                 ffmpeg_version) ffmpegv=$value ;; free) free=$value ;; simd) simd=$value ;;
                 missing) missing=$value ;; node) nodes+=("$value") ;;
             esac
@@ -218,17 +217,17 @@ require_workers() {
             problem="ffmpeg lacks: $missing"
         fi
         if [[ $host == "$FARM_LOCAL" ]]; then
-            local_system=$system local_x265=$x265 local_ffmpeg=$ffmpeg
-        elif [[ -z $problem && $system == "$local_system" && ( $x265 != "$local_x265" || $ffmpeg != "$local_ffmpeg" ) ]]; then
-            problem="runs other builds than this host (x265 $x265, ffmpeg $ffmpeg)"
+            local_system=$system local_encoder=$encoder local_ffmpeg=$ffmpeg
+        elif [[ -z $problem && $system == "$local_system" && ( $encoder != "$local_encoder" || $ffmpeg != "$local_ffmpeg" ) ]]; then
+            problem="runs other builds than this host ($ENCODER_LABEL $encoder, ffmpeg $ffmpeg)"
         fi
         if [[ -n $problem ]]; then
             requirement "$host" no "$problem"
             continue
         fi
         [[ $host == "$FARM_LOCAL" && -n $NO_LOCAL ]] && continue
-        # One slot per NUMA node, each pinned to its node: one x265 cannot
-        # use two sockets' worth of threads at 4K.
+        # One slot per NUMA node, each pinned to its node: one encoder
+        # cannot use two sockets' worth of threads (x265 at 4K).
         if (( ${#nodes[@]} > 1 )); then
             for n in "${nodes[@]}"; do
                 SLOT_HOST+=("$host") SLOT_NAME+=("$host node ${n%% *}") SLOT_CPUS+=("${n#* }")
@@ -245,7 +244,7 @@ require_workers() {
         cpu=$(sed -E 's/\((R|TM)\)//g; s/ CPU//; s/ @ .*//; s/ w\/ .*//; s/^(Intel|AMD) //' <<<"${cpu:-?}")
         requirement "$host" yes "$system · $cpu · $threads threads · ${simd##* } · $slots · $(human_bytes "$free") free$(
             [[ $host == "$FARM_LOCAL" ]] && echo " · this host" || {
-                [[ $system == "$local_system" ]] && echo " · same builds" || echo " · x265 ${x265v#version } · ffmpeg $ffmpegv"; }
+                [[ $system == "$local_system" ]] && echo " · same builds" || echo " · $encoderv · ffmpeg $ffmpegv"; }
             )${WRAP[$host]:+ · under ${WRAP[$host]}}"
     done
     (( ${#SLOT_HOST[@]} > 0 )) || requirement "Slots" no "no host left to encode on"

@@ -2,20 +2,20 @@
 # CALIBRATION_SAMPLES stream-copied cuts at its CRFs (lowest first) through
 # the entry script's encode_sample hook, scores them with libvmaf
 # (VMAF_OPTIONS) and XPSNR, and keeps the highest CRF before the first failed
-# gate. Then picks a preset: the fastest (by x265's preset order) whose file
-# is within SIZE_TOLERANCE of the smallest. Measurements are cached per
-# preset and CRF in the .analysis (locate_analysis), so a new CRF list or
-# gate only encodes CRFs never measured. cut_worst_sample then encodes the
-# chosen setting's worst scene next to the output, for a look before the
-# full encode.
-# Sourced by the hevc-*.sh entry scripts.
+# gate. Then picks a preset: the fastest (by the encoder's preset order)
+# whose file is within SIZE_TOLERANCE of the smallest. Measurements are
+# cached per preset and CRF in the .analysis (locate_analysis), so a new CRF
+# list or gate only encodes CRFs never measured. cut_worst_sample then
+# encodes the chosen setting's worst scene next to the output, for a look
+# before the full encode.
+# Sourced by the entry scripts.
 #
-# The entry script provides: PRESETS (parsed by parse_presets) X265_PARAMS
-# COLOUR_FLAGS VF REF_FILTER DIST_FILTER VMAF_OPTIONS VMAF_TARGET_MEAN
-# VMAF_TARGET_LOW CAMBI_MAX KNEE_RATIO SAMPLE_PERCENT SAMPLE_DURATION
-# and `encode_sample <preset> <crf> <in> <out> [ffmpeg options…]`, which
-# passes the extra options to ffmpeg before its input (they request
-# -progress output on stdout).
+# The entry script provides: PRESETS (parsed by parse_presets) ENCODER_PARAMS
+# VF REF_FILTER DIST_FILTER VMAF_OPTIONS VMAF_TARGET_MEAN VMAF_TARGET_LOW
+# CAMBI_MAX KNEE_RATIO SAMPLE_PERCENT SAMPLE_DURATION, optionally
+# COLOUR_FLAGS and DIST_DECODE, and `encode_sample <preset> <crf> <in>
+# <out> [ffmpeg options…]`, which passes the extra options to ffmpeg before
+# its input (they request -progress output on stdout).
 #
 # Sets for the encode: PRESET SELECTED_CRF SELECTED_SIZE STOPPED ENCODE_FPS
 # WORST_SCENE_AT WORST_SCENE_LOW ROWS ANALYSIS_CREATED, and the stereo GAIN,
@@ -26,6 +26,10 @@
 sample_count() {
     awk -v p="$SAMPLE_PERCENT" -v d="$DURATION" -v l="$SAMPLE_DURATION" 'BEGIN { n = p / 100 * d / l; c = int(n); print (c < n ? c + 1 : c) }'
 }
+
+# ffmpeg input options for decoding an encode to score it, set by a profile
+# that needs them (AV1: film grain left unapplied).
+DIST_DECODE=()
 
 # A slower preset is only worth it for a file this much smaller.
 SIZE_TOLERANCE=0.10
@@ -106,8 +110,8 @@ print_table_legend() {
 preset_fingerprint() {
     {
         stat -L -c '%s %Y' "$INPUT"
-        printf '%s\n' "$1" "${X265_PARAMS//:asm=avx512/}" "${COLOUR_FLAGS[*]}" "$CROP" "$CALIBRATION_SAMPLES" \
-            "$SAMPLE_DURATION" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" "$A" "$STEREO_BITRATE"
+        printf '%s\n' "$1" "${ENCODER_PARAMS//:asm=avx512/}" "${COLOUR_FLAGS[*]}" "$CROP" "$CALIBRATION_SAMPLES" \
+            "$SAMPLE_DURATION" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" "$A" "$STEREO_BITRATE" "${DIST_DECODE[@]}"
         declare -f cut_samples encode_sample score_vmaf score_xpsnr aggregate_crf
     } | sha256sum | cut -d' ' -f1
 }
@@ -329,9 +333,9 @@ measure_crf() {
         run_step 0 "${SAMPLE_FRAMES[n]}" encode_sample "$preset" "$crf" "$ref" "$enc" -nostats -progress pipe:1
         end=$(date +%s.%N)
         frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$enc")
-        run_step 1 "$frames" score_vmaf "$enc" "$ref" "$log" -nostats -progress pipe:1
+        run_step 1 "$frames" score_vmaf "$enc" "$ref" "$log" -nostats -progress pipe:1 "${DIST_DECODE[@]}"
         # XPSNR's summary is on stderr; stdout carries the progress.
-        run_step 2 "$frames" score_xpsnr "$enc" "$ref" -nostats -progress pipe:1 2>"$WORK/xpsnr.log"
+        run_step 2 "$frames" score_xpsnr "$enc" "$ref" -nostats -progress pipe:1 "${DIST_DECODE[@]}" 2>"$WORK/xpsnr.log"
         echo "$frames $(stat -c %s "$enc") $(awk -v s="$start" -v e="$end" 'BEGIN { printf "%f", e - s }') $(xpsnr_y <"$WORK/xpsnr.log")" \
             >"$WORK/result-$preset-$crf-$n"
     done
@@ -514,8 +518,8 @@ run_calibration() {
     print_gain
 
     # The fastest preset whose file is within SIZE_TOLERANCE of the smallest.
-    # "Fastest" by x265's preset order (PRESET_NAMES is sorted on it), not by
-    # the measured fps, which varies with machine load.
+    # "Fastest" by the encoder's preset order (PRESET_NAMES is sorted on
+    # it), not by the measured fps, which varies with machine load.
     min_size=""
     for preset in "${PRESET_NAMES[@]}"; do
         size=${RES_SIZE[$preset]}

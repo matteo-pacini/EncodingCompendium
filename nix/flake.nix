@@ -20,9 +20,13 @@
           ffmpeg-full
           mkvtoolnix-cli
           jq
-          # 2160p HDR: Dolby Vision RPUs, and the x265 CLI (only it injects them)
+          # 2160p HDR: Dolby Vision RPUs and HDR10+ metadata, and the x265 CLI
+          # (only it injects them)
           dovi-tool
+          hdr10plus_tool
           x265
+          # AV1: SvtAv1EncApp from SVT-AV1-PSY's successor (ffmpeg links mainline)
+          svt-av1-hdr
         ];
       # The scripts use GNU options (stat -c, readlink -f, sed -i); on macOS
       # these come first in PATH instead of the BSD tools.
@@ -67,6 +71,8 @@
         };
         hevc-1080p-sdr = script pkgs "hevc-1080p-sdr" "";
         hevc-2160p-hdr = script pkgs "hevc-2160p-hdr" "";
+        av1-1080p-sdr = script pkgs "av1-1080p-sdr" "";
+        av1-2160p-hdr = script pkgs "av1-2160p-hdr" "";
         # Workers fetch their tools from the commit this was built from.
         hevc-farm = script pkgs "hevc-farm" (
           pkgs.lib.optionalString (self ? rev)
@@ -82,6 +88,14 @@
         hevc-2160p-hdr = {
           type = "app";
           program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.hevc-2160p-hdr}/bin/hevc-2160p-hdr";
+        };
+        av1-1080p-sdr = {
+          type = "app";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.av1-1080p-sdr}/bin/av1-1080p-sdr";
+        };
+        av1-2160p-hdr = {
+          type = "app";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.av1-2160p-hdr}/bin/av1-2160p-hdr";
         };
         hevc-farm = {
           type = "app";

@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 #
-# hevc-1080p-sdr.sh or hevc-2160p-hdr.sh, whichever fits the source, spread
-# over several hosts: this one and every --worker. Calibration samples run
-# on every slot at once; the video is split at scene cuts into chunks,
+# hevc-1080p-sdr.sh or hevc-2160p-hdr.sh, whichever fits the source (with
+# --codec av1, av1-1080p-sdr.sh or av1-2160p-hdr.sh), spread over several
+# hosts: this one and every --worker. Calibration samples run on every
+# slot at once; the video is split at scene cuts into chunks,
 # encoded on every slot and joined. The output is then scored against the
 # source as with --score, chunk by chunk on the slot that encoded it.
 #
 # Usage: hevc-farm.sh [--dry-run] [--yes] [--start-at <time>] [--stop-at <time>]
-#                    [--no-local] [--worker alias[=wrapper]]… <input.mkv>
+#                    [--codec hevc|av1] [--no-local] [--worker alias[=wrapper]]…
+#                    <input.mkv>
 #
 #   --worker alias[=wrapper]  an SSH alias to encode on, each job there run
 #                             under wrapper (e.g. 'nexus=with-fans 50 --');
 #                             once per worker; none encodes on this host only
+#   --codec hevc|av1          the encoder: hevc (x265, default) or av1
+#                             (SVT-AV1-HDR)
 #   --no-local                leave this host out of the encoding
 #   --dry-run                 calibrate, then print the encode plan
 #   --yes                     encode without asking, once calibrated
@@ -29,7 +33,8 @@
 # Every host gets one slot per NUMA node. Workers need SSH keys and Nix:
 # their tools come from this repository's flake on GitHub, at FARM_REF
 # (default: this checkout's commit, which must be pushed). PRESETS,
-# SAMPLE_PERCENT and SAMPLE_DURATION as in the single-host scripts.
+# SAMPLE_PERCENT, SAMPLE_DURATION, VMAF_TARGET_MEAN, VMAF_TARGET_LOW and
+# QCOMP as in the single-host scripts.
 # Set NO_COLOR=1 to disable colours.
 
 set -euo pipefail
@@ -43,10 +48,12 @@ done
 farm_parse_args "$@"
 wait_for_start
 SCORE=1
-# PQ or HLG makes it the 2160p HDR profile, which refuses HLG itself.
+# PQ or HLG makes it a 2160p HDR profile, which refuses HLG itself.
 TRANSFER=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of default=nw=1:nk=1 "$INPUT" 2>/dev/null || true)
-case $TRANSFER in
-    smpte2084 | arib-std-b67) PROFILE=2160p-hdr ;;
+case $CODEC:$TRANSFER in
+    av1:smpte2084 | av1:arib-std-b67) PROFILE=av1-2160p-hdr ;;
+    av1:*) PROFILE=av1-1080p-sdr ;;
+    *:smpte2084 | *:arib-std-b67) PROFILE=2160p-hdr ;;
     *) PROFILE=1080p-sdr ;;
 esac
 # shellcheck source=/dev/null
@@ -81,15 +88,14 @@ profile_analysis
 section "2 · Proposed conversion — $PROFILE_TARGET"
 ###############################################################################
 
-# Chunks are encoded without the RPU, which goes into the joined stream.
-DV_INJECTION="dovi_tool inject-rpu into the joined chunks"
+HDR_INJECTION=$FARM_HDR
 profile_settings
 
 heading "Hosts  ${DIM}${#SLOT_HOST[@]} slots${RESET}"
 ENCODE_SLOTS=${#SLOT_HOST[@]}
 item "Samples and ≈ $((CHUNK_SECONDS / 60)) min chunks, joined at scene cuts, on every slot; each chunk scored where it was encoded"
 for i in "${!SLOT_HOST[@]}"; do
-    setting "${SLOT_NAME[i]}" "${WRAP[${SLOT_HOST[i]}]:-no wrapper}${SLOT_POOLS[i]:+ · x265 pools ${SLOT_POOLS[i]}}${SLOT_ARM[i]:+ · without asm=avx512 (ARM)}"
+    setting "${SLOT_NAME[i]}" "${WRAP[${SLOT_HOST[i]}]:-no wrapper}$(encoder_slot_note "$i")"
 done
 
 ###############################################################################

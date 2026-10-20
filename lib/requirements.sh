@@ -1,6 +1,6 @@
 # Section 0: checks that every tool is on PATH and can do what the scripts
 # ask of it, then exits with status 1 if anything is missing. Sourced by the
-# hevc-*.sh entry scripts.
+# entry scripts.
 
 REQUIREMENTS_FAILED=0
 
@@ -111,8 +111,8 @@ require_x265_cli() {
     fi
 }
 
-# Checks the PRESETS environment variable (see parse_presets), then that
-# libx265 itself accepts each preset, with a one-frame encode.
+# Checks SAMPLE_PERCENT and SAMPLE_DURATION (see parse_sampling), and
+# VMAF_TARGET_MEAN and VMAF_TARGET_LOW (see parse_vmaf_targets).
 require_sampling() {
     local problem
     if problem=$(parse_sampling); then
@@ -120,8 +120,25 @@ require_sampling() {
     else
         requirement "Sampling" no "$problem"
     fi
+    if problem=$(parse_vmaf_targets); then
+        requirement "VMAF gates" yes "NEG mean ≥ $VMAF_TARGET_MEAN · 1%-low ≥ $VMAF_TARGET_LOW"
+    else
+        requirement "VMAF gates" no "$problem"
+    fi
 }
 
+# Checks QCOMP, x265's qcomp (see parse_qcomp).
+require_qcomp() {
+    local problem
+    if problem=$(parse_qcomp); then
+        requirement "qcomp" yes "$QCOMP"
+    else
+        requirement "qcomp" no "$problem"
+    fi
+}
+
+# Checks the PRESETS environment variable (see parse_presets), then that
+# the encoder itself accepts each preset (encoder_preset_ok).
 require_presets() {
     local problem i summary="" rejected=()
     if ! problem=$(parse_presets); then
@@ -132,14 +149,12 @@ require_presets() {
     for i in "${!PRESET_NAMES[@]}"; do
         summary+="${summary:+ · }${PRESET_NAMES[i]}: ${PRESET_CRFS[i]// /,}"
         command -v ffmpeg >/dev/null || continue
-        ffmpeg -nostdin -v error -f lavfi -i testsrc2=s=320x180:d=0.04 -frames:v 1 -pix_fmt yuv420p10le \
-            -c:v libx265 -preset "${PRESET_NAMES[i]}" -x265-params log-level=error -f null - 2>/dev/null ||
-            rejected+=("${PRESET_NAMES[i]}")
+        encoder_preset_ok "${PRESET_NAMES[i]}" || rejected+=("${PRESET_NAMES[i]}")
     done
     if (( ${#rejected[@]} == 0 )); then
         requirement "PRESETS" yes "$summary (fastest first)"
     else
-        requirement "PRESETS" no "libx265 rejects: ${rejected[*]}"
+        requirement "PRESETS" no "$ENCODER_NAME rejects: ${rejected[*]}"
     fi
 }
 

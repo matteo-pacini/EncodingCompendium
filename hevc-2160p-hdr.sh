@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Analyse a 2160p HDR UHD Blu-ray remux (HDR10, optionally Dolby Vision) and
-# convert it to HEVC Main10 HDR10 — plus Dolby Vision profile 8.1 when the
-# source has Dolby Vision — within Level 5.1 High tier (160 Mb/s VBV), so any
-# decoder of that level plays it. HDR is kept as-is: no tone mapping.
+# Analyse a 2160p HDR UHD Blu-ray remux (HDR10, optionally Dolby Vision and
+# HDR10+) and convert it to HEVC Main10 HDR10 — plus Dolby Vision profile 8.1
+# and HDR10+ when the source has them — within Level 5.1 High tier
+# (160 Mb/s VBV), so any decoder of that level plays it. HDR is kept as-is: no tone mapping.
 #
 # Usage: hevc-2160p-hdr.sh [--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>
 #
@@ -21,12 +21,16 @@
 # PRESETS (environment) lists the x265 presets and CRFs to calibrate, as
 # "preset:crf,crf,…;preset:crf,…" (default "slow:16,17,18,19,20"); section 3 walks each
 # preset's CRFs and keeps the fastest preset within 10% of the smallest file.
+# VMAF_TARGET_MEAN and VMAF_TARGET_LOW (defaults 96 and 94) are the VMAF NEG
+# gates: the pooled mean, and the 1%-low pooled and in every scene.
+# QCOMP (default 0.7, x265's own is 0.6) is x265's qcomp: higher keeps more
+# bits in complex, grainy scenes.
 # SAMPLE_PERCENT (default 1.5) is the share of the film it calibrates on, in
 # samples of SAMPLE_DURATION seconds (default 12).
 #
-# Requires ffmpeg-full, jq, mkvtoolnix, dovi_tool and the x265 CLI
-# (`nix develop path:./nix`); section 0 checks them and exits with status 1
-# if anything is missing. Set NO_COLOR=1 to disable colours.
+# Requires ffmpeg-full, jq, mkvtoolnix, dovi_tool, hdr10plus_tool and the
+# x265 CLI (`nix develop path:./nix`); section 0 checks them and exits with
+# status 1 if anything is missing. Set NO_COLOR=1 to disable colours.
 #
 
 set -euo pipefail

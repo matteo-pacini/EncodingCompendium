@@ -1,6 +1,6 @@
 # The stereo track: downmix of the primary audio A, AAC-LC at a fixed gain
 # that puts the true peak at TARGET_PEAK (measured over the whole film), plus
-# the original track copied. Sourced by the hevc-*.sh entry scripts.
+# the original track copied. Sourced by the entry scripts.
 
 # One fixed gain, measured in section 3, puts the downmix's true peak here:
 # the film's dynamics stay intact, and the summed downmix cannot clip.

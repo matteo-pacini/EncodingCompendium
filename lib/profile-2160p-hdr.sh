@@ -1,7 +1,11 @@
-# The 2160p HDR profile: UHD Blu-ray remux (HDR10, optionally Dolby Vision)
-# to HEVC Main10 HDR10, plus Dolby Vision 8.1, within Level 5.1 High tier.
+# The 2160p HDR profile: UHD Blu-ray remux (HDR10, optionally Dolby Vision
+# and HDR10+) to HEVC Main10 HDR10, plus Dolby Vision 8.1 and HDR10+ when
+# the source has them, within Level 5.1 High tier.
 # Sourced by hevc-2160p-hdr.sh after the other lib/ files; each function
 # is one section's profile-specific part.
+
+# shellcheck source=/dev/null
+source "$LIB/encoder-x265.sh"
 
 PROFILE_TARGET="HEVC Main10 HDR10 · Level 5.1 High · 160 Mb/s VBV"
 
@@ -10,6 +14,9 @@ profile_defaults() {
     PRESETS=${PRESETS:-slow:16,17,18,19,20}
     SAMPLE_PERCENT=${SAMPLE_PERCENT:-1.5}
     SAMPLE_DURATION=${SAMPLE_DURATION:-12}
+    VMAF_TARGET_MEAN=${VMAF_TARGET_MEAN:-96}
+    VMAF_TARGET_LOW=${VMAF_TARGET_LOW:-94}
+    QCOMP=${QCOMP:-0.7}
 
     # full_ref CAMBI scores only banding the encode adds over the source; eotf=pq
     # judges visibility on the PQ curve instead of BT.1886.
@@ -26,6 +33,7 @@ profile_requirements() {
     require_tool mkvmerge --version
     require_tool mkvpropedit --version
     require_tool dovi_tool --version
+    require_tool hdr10plus_tool --version
     require_x265_cli
     require_tool sha256sum --version
     require_tool pgrep -V
@@ -33,6 +41,7 @@ profile_requirements() {
         require_ffmpeg_filters libvmaf xpsnr cropdetect ebur128 setparams pan crop
         require_ffmpeg_encoders libx265 aac
         require_x265_main10
+        require_qcomp
         require_vmaf "$VMAF_OPTIONS"
     fi
     return 0
@@ -119,22 +128,18 @@ profile_analysis() {
     report_subtitles
     report_chapters
 
-    [[ -n $HAS_HDR10PLUS ]] && WARNINGS+=("HDR10+ dynamic metadata is dropped: the output carries HDR10 static metadata, and Dolby Vision 8.1 when the source has it.")
-    [[ $DV_EL == 1 ]] && WARNINGS+=("Dual-layer Dolby Vision (profile $DV_PROFILE): the enhancement layer is discarded when converting to profile 8.1 — usually invisible, but a full enhancement layer (FEL) can carry real picture data.")
-    [[ -n $DV_PROFILE && -z $MASTER_DISPLAY ]] && WARNINGS+=("Dolby Vision without mastering display metadata: x265 needs it for profile 8.1.")
+    [[ $DV_EL == 1 ]] && WARNINGS+=("Dual-layer Dolby Vision (profile $DV_PROFILE): the enhancement layer is discarded when converting to profile $DV_TARGET — usually invisible, but a full enhancement layer (FEL) can carry real picture data.")
+    [[ -n $DV_PROFILE && -z $MASTER_DISPLAY ]] && WARNINGS+=("Dolby Vision without mastering display metadata: profile $DV_TARGET needs it.")
     [[ -z $DV_PROFILE && -z $MASTER_DISPLAY ]] && WARNINGS+=("No mastering display metadata: the HDR10 encode will carry none either.")
     report_observations
 
     [[ $V_TRANSFER == arib-std-b67 ]] && die "HLG source — this script only handles PQ (HDR10 / Dolby Vision)"
-    [[ $V_TRANSFER == smpte2084 ]] || die "SDR source — use hevc-1080p-sdr.sh"
-    (( V_HEIGHT > 1080 )) || die "Source is ${V_HEIGHT}p — this script handles 2160p; use hevc-1080p-sdr.sh"
+    [[ $V_TRANSFER == smpte2084 ]] || die "SDR source — use the 1080p SDR script"
+    (( V_HEIGHT > 1080 )) || die "Source is ${V_HEIGHT}p — this script handles 2160p; use the 1080p SDR script"
     [[ $DV_PROFILE == 5 ]] && die "Dolby Vision profile 5 has no HDR10 base layer to re-encode"
-    [[ -n $DV_PROFILE && -z $MASTER_DISPLAY ]] && die "Dolby Vision 8.1 needs mastering display metadata, and the source has none"
+    [[ -n $DV_PROFILE && -z $MASTER_DISPLAY ]] && die "Dolby Vision $DV_TARGET needs mastering display metadata, and the source has none"
     return 0
 }
-
-# HDR10+ does not survive the encode, so the name must not promise it.
-rename_stem() { sed -E 's/HDR10(Plus|\+)/HDR10/g' <<<"$1"; }
 
 # Section 2: the x265 settings, Dolby Vision plan, audio and container
 # plans, gates and the encode and scoring filters.
@@ -162,20 +167,18 @@ profile_settings() {
     # x265's default from preset slow up; pinned so faster presets keep grain.
     PSY="psy-rdoq=1.0"
     DETAIL="no-sao=1:no-strong-intra-smoothing=1:deblock=-2,-2"
-    RC="qcomp=0.7:rc-lookahead=60:bframes=8:ref=5"
+    RC="qcomp=$QCOMP:rc-lookahead=60:bframes=8:ref=5"
     GOP="keyint=240:min-keyint=24"
     # x265 only uses its AVX-512 kernels when asked; without AVX-512 it warns and
     # falls back to what it detects.
     ASM="asm=avx512"
     X265_PARAMS="$COLOUR:$HDR:$LEVEL:$AQ:$PSY:$DETAIL:$RC:$GOP:$ASM"
+    ENCODER_PARAMS=$X265_PARAMS
     # x265-params only writes the HEVC VUI; these set the Matroska Colour elements.
     COLOUR_FLAGS=(-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv -chroma_sample_location "${V_CHROMALOC:-topleft}")
+    hdr_tags
 
-    # Dolby Vision: the source RPU, converted to profile 8.1 (-m 2 removes the
-    # dual-layer mapping) and, after a crop, with zeroed letterbox offsets (L5).
-    DOVI_EXTRACT=(dovi_tool -m 2 ${CROP:+--crop} extract-rpu)
-
-    heading "Video  ${DIM}#$V → HEVC Main10 HDR10${DV_PROFILE:+ + Dolby Vision 8.1}${RESET}"
+    heading "Video  ${DIM}#$V → HEVC Main10 HDR10${DV_PROFILE:+ + Dolby Vision 8.1}${HAS_HDR10PLUS:+ + HDR10+}${RESET}"
     item "libx265 · preset and CRF picked in section 3 · yuv420p10le"
     setting "Level / VBV" "$LEVEL"
     setting "Colour" "$COLOUR"
@@ -192,17 +195,33 @@ profile_settings() {
     if [[ -n $DV_PROFILE ]]; then
         item "Dolby Vision profile $DV_PROFILE → 8.1 (BL = HDR10, compatibility ID 1)"
         setting "RPU" "${DOVI_EXTRACT[*]}"
-        setting "Injection" "${DV_INJECTION:-ffmpeg (decode${CROP:+, crop}) | x265 CLI --dolby-vision-profile 8.1}"
         setting "Mux" "mkvmerge (writes the Dolby Vision configuration)"
     fi
-    [[ -n $HAS_HDR10PLUS ]] && item "HDR10+ dropped"
+    if [[ -n $HAS_HDR10PLUS ]]; then
+        item "HDR10+ dynamic metadata copied"
+        setting "Metadata" "hdr10plus_tool extract"
+    fi
+    if [[ -n $DV_PROFILE || -n $HAS_HDR10PLUS ]]; then
+        setting "Injection" "${HDR_INJECTION:-${DV_PROFILE:+x265 CLI --dolby-vision-rpu}${DV_PROFILE:+${HAS_HDR10PLUS:+ · }}${HAS_HDR10PLUS:+hdr10plus_tool inject after the encode}}"
+    fi
 
     plan_audio
     ORIGINAL_MEDIA_TYPE="Ultra HD Blu-ray"
     plan_container
 
+    hdr_scoring_settings
+    return 0
+}
+
+# Sets DOVI_EXTRACT, the RPU's extraction (needs CROP), and EXTRA_TAGS
+# for the HDR formats carried over.
+hdr_tags() {
+    # Dolby Vision: the source RPU, converted to profile 8.1, which AV1's 10.1
+    # shares (-m 2 removes the dual-layer mapping), and after a crop with
+    # zeroed letterbox offsets (L5).
+    DOVI_EXTRACT=(dovi_tool -m 2 ${CROP:+--crop} extract-rpu)
     EXTRA_TAGS=(
-        "HDR_FORMAT=${DV_PROFILE:+Dolby Vision 8.1 + }HDR10"
+        "HDR_FORMAT=${DV_PROFILE:+Dolby Vision $DV_TARGET + }${HAS_HDR10PLUS:+HDR10+ + }HDR10"
         "HDR_MASTERING_DISPLAY=${MASTER_DISPLAY:-none}"
         "HDR_MAX_CLL=${MAX_CLL:-none}"
     )
@@ -210,13 +229,12 @@ profile_settings() {
         "DOVI_SOURCE_PROFILE=$DV_PROFILE $DV_LAYERS"
         "DOVI_CONVERSION=${DOVI_EXTRACT[*]}"
     )
+    return 0
+}
 
-    ###########################
-    # Calibration and scoring #
-    ###########################
-
-    VMAF_TARGET_MEAN=95
-    VMAF_TARGET_LOW=90
+# Section 2's calibration and scoring: the gates, then the encode and
+# scoring filters.
+hdr_scoring_settings() {
     # Worst half second, as at 1080p: on a test film, eotf=pq scored within
     # ~30% of eotf=bt1886, so the same limit applies.
     CAMBI_MAX=2.5
@@ -251,37 +269,50 @@ encode_sample() {
 # Frame count of an RPU file.
 rpu_frames() { dovi_tool info -i "$1" --summary 2>/dev/null | awk '$1 == "Frames:" { print $2 }'; }
 
-# Section 4, first: the intermediates' directory and its free space, the
-# x265 CLI options and, with Dolby Vision, the source RPU.
+# Frame count of an HDR10+ JSON file.
+hdr10plus_frames() { jq '.SceneInfo | length' "$1" 2>/dev/null; }
+
+# `check_metadata_frames <what> <frames>`: the metadata's frame count
+# against the video's. Encoders only warn when they differ, and then write
+# garbage metadata for the frames that are off.
+check_metadata_frames() {
+    check_near "$1 frames ($2)" "$TOTAL_FRAMES" "$2" 2
+    awk -v e="$TOTAL_FRAMES" -v a="$2" 'BEGIN { d = e - a; exit !((d < 0 ? -d : d) <= 2) }' ||
+        die "The $1 does not match the video's frame count"
+}
+
+# Section 4, first: the intermediates' directory and its free space, and
+# the source's Dolby Vision RPU and HDR10+ metadata, with HDR_ARGS, the
+# encoder options that carry them.
 encode_prepare() {
     prepare_output
     prepare_parts
     RPU="$PARTS/rpu.bin"
-    DV_ARGS=()
-    [[ -n $DV_PROFILE ]] && DV_ARGS=(--dolby-vision-profile 8.1 --dolby-vision-rpu "$RPU")
+    HDR10PLUS_JSON="$PARTS/hdr10plus.json"
 
     if [[ -n $DV_PROFILE ]]; then
         heading "Dolby Vision RPU"
         run "${DOVI_EXTRACT[@]}" -i "$INPUT" -o "$RPU"
         if [[ -z $DRY_RUN ]]; then
             SOURCE_RPU_FRAMES=$(rpu_frames "$RPU")
-            # x265 only warns when RPU and frame counts differ, and then writes
-            # garbage metadata for the frames that are off.
-            check_near "RPU frames ($SOURCE_RPU_FRAMES)" "$TOTAL_FRAMES" "$SOURCE_RPU_FRAMES" 2
-            awk -v e="$TOTAL_FRAMES" -v a="$SOURCE_RPU_FRAMES" 'BEGIN { d = e - a; exit !((d < 0 ? -d : d) <= 2) }' ||
-                die "The RPU does not match the video's frame count"
+            check_metadata_frames "RPU" "$SOURCE_RPU_FRAMES"
         fi
     fi
+    if [[ -n $HAS_HDR10PLUS ]]; then
+        heading "HDR10+ metadata"
+        run hdr10plus_tool extract -i "$INPUT" -o "$HDR10PLUS_JSON"
+        if [[ -z $DRY_RUN ]]; then
+            SOURCE_HDR10PLUS_FRAMES=$(hdr10plus_frames "$HDR10PLUS_JSON")
+            check_metadata_frames "HDR10+ metadata" "$SOURCE_HDR10PLUS_FRAMES"
+        fi
+    fi
+    mapfile -t HDR_ARGS < <(encoder_hdr_args)
     return 0
 }
 
-# Section 4, last: checks the encoded RPU, muxes and finalizes.
-encode_mux() {
-    if [[ -n $DV_PROFILE && -z $DRY_RUN ]]; then
-        dovi_tool extract-rpu -i "$VIDEO_HEVC" -o "$PARTS/encoded-rpu.bin" >/dev/null
-        check "Dolby Vision RPU in the encode" "$SOURCE_RPU_FRAMES" "$(rpu_frames "$PARTS/encoded-rpu.bin")"
-    fi
-
+# Sets COLOUR_MKV, mkvmerge's Matroska Colour elements for the source's
+# colour and static HDR10 metadata.
+hdr_colour_mkv() {
     # Matroska colour elements, numbered per ITU-T H.273; chroma siting per
     # Matroska (1 = collocated, 2 = half).
     case $V_CHROMALOC in
@@ -301,8 +332,23 @@ encode_mux() {
         )
     fi
     [[ -n $MAX_CLL ]] && COLOUR_MKV+=(--max-content-light "0:${MAX_CLL%,*}" --max-frame-light "0:${MAX_CLL#*,}")
+    return 0
+}
 
-    mux_parts "HEVC Main10 · CRF $SELECTED_CRF${DV_PROFILE:+ · Dolby Vision 8.1}" "${COLOUR_MKV[@]}"
+# Section 4, last: checks the encoded RPU and HDR10+ metadata, muxes and
+# finalizes.
+encode_mux() {
+    if [[ -n $DV_PROFILE && -z $DRY_RUN ]]; then
+        dovi_tool extract-rpu -i "$VIDEO_STREAM" -o "$PARTS/encoded-rpu.bin" >/dev/null
+        check "Dolby Vision RPU in the encode" "$SOURCE_RPU_FRAMES" "$(rpu_frames "$PARTS/encoded-rpu.bin")"
+    fi
+    if [[ -n $HAS_HDR10PLUS && -z $DRY_RUN ]]; then
+        hdr10plus_tool extract -i "$VIDEO_STREAM" -o "$PARTS/encoded-hdr10plus.json" >/dev/null
+        check "HDR10+ metadata in the encode" "$SOURCE_HDR10PLUS_FRAMES" "$(hdr10plus_frames "$PARTS/encoded-hdr10plus.json")"
+    fi
+
+    hdr_colour_mkv
+    mux_parts "HEVC Main10 · CRF $SELECTED_CRF${DV_PROFILE:+ · Dolby Vision $DV_TARGET}${HAS_HDR10PLUS:+ · HDR10+}" "${COLOUR_MKV[@]}"
     return 0
 }
 
@@ -310,7 +356,8 @@ encode_mux() {
 profile_encode() {
     encode_prepare
     encode_stereo
-    encode_video "${DV_ARGS[@]}"
+    encode_video "${HDR_ARGS[@]}"
+    encoder_stream_hdr
     encode_mux
 }
 
@@ -320,8 +367,11 @@ profile_checks() {
     check "Colour" "bt2020 smpte2084 bt2020nc tv" "$(out_probe '.streams[0] | "\(.color_primaries) \(.color_transfer) \(.color_space) \(.color_range)"')"
     FIRST_FRAME=$(ffprobe -v error -select_streams v:0 -read_intervals "%+#1" -show_frames -show_entries frame=side_data_list -of json "$OUTPUT")
     check "HDR10 metadata" "yes yes" "$(jq -r '[.frames[0].side_data_list[]?.side_data_type] | "\(if index("Mastering display metadata") then "yes" else "no" end) \(if index("Content light level metadata") then "yes" else "no" end)"' <<<"$FIRST_FRAME")"
+    if [[ -n $HAS_HDR10PLUS ]]; then
+        check "HDR10+ metadata" "yes" "$(jq -r 'if any(.frames[0].side_data_list[]?; .side_data_type | test("2094-40")) then "yes" else "no" end' <<<"$FIRST_FRAME")"
+    fi
     if [[ -n $DV_PROFILE ]]; then
-        check "Dolby Vision" "8 1" "$(out_probe '[.streams[0].side_data_list[]? | select(.side_data_type == "DOVI configuration record")][0] | "\(.dv_profile) \(.dv_bl_signal_compatibility_id)"')"
+        check "Dolby Vision" "${DV_TARGET/./ }" "$(out_probe '[.streams[0].side_data_list[]? | select(.side_data_type == "DOVI configuration record")][0] | "\(.dv_profile) \(.dv_bl_signal_compatibility_id)"')"
     fi
     return 0
 }

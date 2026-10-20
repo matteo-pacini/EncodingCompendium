@@ -1,6 +1,10 @@
 # The 1080p SDR profile: Blu-ray remux to HEVC Main10 within Level 4.1
 # Main tier. Sourced by hevc-1080p-sdr.sh and hevc-farm.sh after the
 # other lib/ files; each function is one section's profile-specific part.
+# The AV1 profile builds on it: its analysis, filters and gates.
+
+# shellcheck source=/dev/null
+source "$LIB/encoder-x265.sh"
 
 PROFILE_TARGET="HEVC Main10 · Level 4.1 Main · 20 Mb/s VBV"
 
@@ -9,6 +13,9 @@ profile_defaults() {
     PRESETS=${PRESETS:-slow:18,19,20}
     SAMPLE_PERCENT=${SAMPLE_PERCENT:-3}
     SAMPLE_DURATION=${SAMPLE_DURATION:-20}
+    VMAF_TARGET_MEAN=${VMAF_TARGET_MEAN:-96}
+    VMAF_TARGET_LOW=${VMAF_TARGET_LOW:-94}
+    QCOMP=${QCOMP:-0.7}
 
     # full_ref CAMBI scores only banding the encode adds over the source.
     VMAF_OPTIONS="model=version=vmaf_v0.6.1neg:feature='name=cambi\:full_ref=true'"
@@ -30,6 +37,7 @@ profile_requirements() {
         require_ffmpeg_filters libvmaf xpsnr cropdetect ebur128 setparams pan crop
         require_ffmpeg_encoders libx265 aac
         require_x265_main10
+        require_qcomp
         require_vmaf "$VMAF_OPTIONS"
     fi
     return 0
@@ -67,12 +75,13 @@ profile_settings() {
     # x265's default from preset slow up; pinned so faster presets keep grain.
     PSY="psy-rdoq=1.0"
     DETAIL="no-sao=1:no-strong-intra-smoothing=1:deblock=-2,-2"
-    RC="qcomp=0.7:rc-lookahead=60:bframes=8:ref=5"
+    RC="qcomp=$QCOMP:rc-lookahead=60:bframes=8:ref=5"
     GOP="keyint=240:min-keyint=24"
     # x265 only uses its AVX-512 kernels when asked; without AVX-512 it warns and
     # falls back to what it detects.
     ASM="asm=avx512"
     X265_PARAMS="$COLOUR:$LEVEL:$AQ:$PSY:$DETAIL:$RC:$GOP:$ASM"
+    ENCODER_PARAMS=$X265_PARAMS
     # x265-params only writes the HEVC VUI; these set the Matroska Colour elements.
     COLOUR_FLAGS=(-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv -chroma_sample_location left)
 
@@ -93,13 +102,13 @@ profile_settings() {
 
     plan_audio
     plan_container
+    sdr_scoring_settings
+    return 0
+}
 
-    ###########################
-    # Calibration and scoring #
-    ###########################
-
-    VMAF_TARGET_MEAN=95
-    VMAF_TARGET_LOW=90
+# Section 2's calibration and scoring: the gates, then the encode and
+# scoring filters.
+sdr_scoring_settings() {
     # Worst half second. CAMBI ≈ 5 is where Netflix finds banding "slightly
     # annoying"; 2.5 stays clear of it on an OLED in a dark room.
     CAMBI_MAX=2.5

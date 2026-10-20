@@ -1,6 +1,6 @@
 # Terminal output: colours (off without a terminal or with NO_COLOR), boxed
 # sections, key/value lines, a rewritable progress line and the encode
-# progress bar. Sourced by the hevc-*.sh entry scripts.
+# progress bar. Sourced by the entry scripts.
 
 if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
     RESET=$'\e[0m' BOLD=$'\e[1m' DIM=$'\e[2m'

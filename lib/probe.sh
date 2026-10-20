@@ -1,6 +1,6 @@
 # Source probing and the section 1 report: container, video, black bars,
 # audio, subtitles, chapters and the collected WARNINGS. Sourced by the
-# hevc-*.sh entry scripts.
+# entry scripts.
 
 load_probe() {
     PROBE=$(ffprobe -v error -show_format -show_streams -show_chapters -of json "$INPUT")

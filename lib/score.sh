@@ -3,8 +3,7 @@
 # CAMBI and XPSNR for the film, set beside the calibration's prediction,
 # then stored as FULL_* global tags and in the .analysis. Opt-in on the
 # single-host scripts (--score); hevc-farm.sh always scores, chunk by
-# chunk on the slot that encoded it. Sourced by the hevc-*.sh entry
-# scripts.
+# chunk on the slot that encoded it. Sourced by the entry scripts.
 
 # Scores encode $1 (its first video stream) against stream $3 of reference
 # $2 into $4, one line per frame: VMAF, CAMBI (full_ref) and XPSNR Y ("inf"
@@ -137,7 +136,7 @@ score_output() {
     local STEP_NAMES=("score") BLOCK_CRF="" start=$SECONDS
     heading "Scoring the whole film"
     begin_sample "VMAF NEG · CAMBI · XPSNR · $(hms "$DURATION")"
-    run_step 0 "$TOTAL_FRAMES" score_frames "$OUTPUT" "$INPUT" "$V" "$WORK/score.tsv" -nostats -progress pipe:1
+    run_step 0 "$TOTAL_FRAMES" score_frames "$OUTPUT" "$INPUT" "$V" "$WORK/score.tsv" -nostats -progress pipe:1 "${DIST_DECODE[@]}"
     clear_block
     ok "Scored in $(hms $((SECONDS - start)))"
     report_score "$WORK/score.tsv"

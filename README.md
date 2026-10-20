@@ -7,10 +7,12 @@ My encoding notebook - writing things down for reference.
 Bash scripts that convert Blu-ray remuxes to HEVC Main10 within an HEVC level, so any decoder of that level plays them:
 
 - `hevc-1080p-sdr.sh`: 1080p SDR, Level 4.1 Main tier (20 Mb/s VBV).
-- `hevc-2160p-hdr.sh`: 2160p HDR10, Level 5.1 High tier (160 Mb/s VBV), plus Dolby Vision 8.1 when the source has Dolby Vision (profile 7 is converted).
-- `hevc-farm.sh`: either of the above, spread over several hosts by SSH.
+- `hevc-2160p-hdr.sh`: 2160p HDR10, Level 5.1 High tier (160 Mb/s VBV), plus Dolby Vision 8.1 and HDR10+ when the source has them (Dolby Vision profile 7 is converted).
+- `av1-1080p-sdr.sh`: 1080p SDR to AV1 Main 10-bit with [SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr).
+- `av1-2160p-hdr.sh`: 2160p HDR to AV1 Main 10-bit HDR10, plus Dolby Vision 10.1 and HDR10+ when the source has them.
+- `hevc-farm.sh`: any of the above, spread over several hosts by SSH (`--codec av1` for the AV1 one).
 
-Each run probes the source and crops black bars. It then calibrates the CRF on samples of the film: per preset, the highest CRF that passes VMAF NEG mean ≥ 95, 1%-low ≥ 90 and CAMBI ≤ 2.5 in every half second. It cuts the worst sample for a look, and asks before encoding. The output has the video, a stereo AAC track, the original audio, subtitles and chapters, with the calibration in its tags. Everything goes in a folder named after the film beside the input. Measurements are cached there in a `.analysis` file, so a rerun only encodes what is new.
+Each run probes the source and crops black bars. It then calibrates the CRF on samples of the film: per preset, the highest CRF that passes VMAF NEG mean ≥ 96, 1%-low ≥ 94 and CAMBI ≤ 2.5 in every half second. It cuts the worst sample for a look, and asks before encoding. The output has the video, a stereo AAC track, the original audio, subtitles and chapters, with the calibration in its tags. Everything goes in a folder named after the film beside the input. Measurements are cached there in a `.analysis` file, so a rerun only encodes what is new.
 
 ```
 nix run 'github:matteo-pacini/EncodingCompendium?dir=nix#hevc-2160p-hdr' -- [--dry-run] [--score] [--yes] [--start-at <time>] movie.mkv
@@ -20,7 +22,10 @@ From a checkout: `nix develop path:./nix -c ./hevc-2160p-hdr.sh movie.mkv`.
 
 - `--score` scores the whole output against the source after the encode, and stores the result as `FULL_*` tags.
 - `--yes` encodes without asking. `--start-at 23:00` waits until then; any `date -d` time works.
-- `PRESETS="medium:14,15,16;slow:16,17,18"` sets the presets and CRFs to try. Defaults: `slow:18,19,20` at 1080p, `slow:16,17,18,19,20` at 2160p.
+- `PRESETS="medium:14,15,16;slow:16,17,18"` sets the presets and CRFs to try. Defaults: `slow:18,19,20` at 1080p, `slow:16,17,18,19,20` at 2160p, `4:18,20,22,24,26` for AV1 at 1080p, `4:16,18,20,22,24` at 2160p (SVT-AV1 presets are numbers, 13 fastest to 0 slowest).
+- `VMAF_TARGET_MEAN` and `VMAF_TARGET_LOW` set the VMAF NEG gates: the mean, and the 1%-low over all samples and in every scene. Defaults: 96 and 94.
+- `VARIANCE_BOOST=1` turns on SVT-AV1's variance boost for the AV1 scripts. Default: off.
+- `QCOMP` sets x265's qcomp, from 0.5 to 1.0: higher keeps more bits in complex, grainy scenes. Default: 0.7 (x265's own is 0.6).
 - `SAMPLE_PERCENT` and `SAMPLE_DURATION` set how much of the film calibration encodes. Defaults: 3% in 20 s samples at 1080p, 1.5% in 12 s at 2160p.
 
 ## Several hosts
@@ -33,11 +38,16 @@ A worker needs an SSH alias with key login, and Nix. It fetches its tools from t
 
 - Each host gets one slot per NUMA node, and calibration samples run on every slot.
 - The video is split into ≈ 3 min chunks at scene cuts. The chunks are encoded on every slot, with faster slots taking more, and each chunk is scored on the slot that encoded it.
-- The master joins the chunks and adds Dolby Vision.
+- The master joins the chunks and, for HEVC, adds Dolby Vision and HDR10+. AV1 chunks carry their own slices of both.
 - A failed chunk is retried, and an unreachable host's chunks go to the other hosts.
 - `--no-local` leaves the master out of the encoding. With no `--worker`, the master encodes alone.
 - `--stop-at 07:00` starts no chunk that would end later, and stops there. Returned chunks are recorded in a `.chunks` file, so running the same command again carries on.
 - The whole film is always scored.
+- `--codec av1` encodes with the AV1 script's settings. Workers then need the commit that added SVT-AV1-HDR to the flake.
+
+## AV1
+
+SVT-AV1-HDR succeeds SVT-AV1-PSY, archived in 2026. The settings follow the [JET guide](https://jaded-encoding-thaumaturgy.github.io/JET-guide/master/encoding/svtav1/) and SVT-AV1-HDR's own defaults: tune 0, quantisation matrices, weak temporal filtering, a QP bias for dark frames and two tile columns (four at 2160p). Variance boost is off unless `VARIANCE_BOOST=1`. The film's grain is encoded, not denoised away, with light synthetic grain (`film-grain=6`) signalled on top. The metrics score the picture without the synthetic grain (libdav1d's `-export_side_data film_grain`), so it neither costs nor earns VMAF, and CAMBI sees banding the grain would partly mask.
 
 # Software Requirements
 
@@ -72,7 +82,7 @@ Slower presets / higher CRF are not worth pursuing, as the encoding time inflate
 <code>aq-mode=2</code> seems to yield the best result (both visually and according to SSIM).</br>
 <code>aq-mode=1:aq-strength:1</code> is decent too, and it consumes less bitrate than <code>aq-mode=2</code>.
 
-<code>qcomp=0.8</code> influences CRF - this value seems to be the community standard for when trying to replicate AVC quality on HEVC and CRF is <= 23.
+<code>qcomp</code> influences CRF - 0.7 to 0.8 is the community range when trying to replicate AVC quality on HEVC and CRF is <= 23. The scripts default to 0.7 (<code>QCOMP</code>).
 
 <code>no-sao=1:no-strong-intra-smoothing=1</code> are a MUST to preserve quality and avoid blurriness.
 

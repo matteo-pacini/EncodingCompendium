@@ -1,5 +1,5 @@
 # Formatting helpers, argument parsing, dry-run execution and the work
-# directory with its cleanup. Sourced by the hevc-*.sh entry scripts.
+# directory with its cleanup. Sourced by the entry scripts.
 
 hms() { awk -v s="$1" 'BEGIN { printf "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60 }'; }
 human_bytes() { awk -v b="$1" 'BEGIN { split("B KiB MiB GiB TiB", u); i = 1; while (b >= 1024 && i < 5) { b /= 1024; i++ } printf "%.2f %s", b, u[i] }'; }
@@ -53,14 +53,12 @@ wait_for_start() {
     progress ""
 }
 
-# x265's presets, fastest first.
-X265_PRESETS=(ultrafast superfast veryfast faster fast medium slow slower veryslow placebo)
-
-# Position of a preset in X265_PRESETS (0 = fastest), or nothing if unknown.
+# Position of a preset in the encoder's ENCODER_PRESETS (0 = fastest), or
+# nothing if unknown.
 preset_rank() {
     local i
-    for i in "${!X265_PRESETS[@]}"; do
-        [[ ${X265_PRESETS[i]} == "$1" ]] && { echo "$i"; return 0; }
+    for i in "${!ENCODER_PRESETS[@]}"; do
+        [[ ${ENCODER_PRESETS[i]} == "$1" ]] && { echo "$i"; return 0; }
     done
 }
 
@@ -71,10 +69,31 @@ parse_sampling() {
     [[ $SAMPLE_PERCENT =~ ^[0-9]+(\.[0-9]+)?$ ]] &&
         awk -v p="$SAMPLE_PERCENT" 'BEGIN { exit !(p > 0 && p <= 90) }' ||
         { echo "SAMPLE_PERCENT '$SAMPLE_PERCENT' is not a number above 0 and at most 90"; return 1; }
-    # Shorter samples mostly measure x265 starting up (60-frame lookahead,
-    # 10 s keyframe interval).
+    # Shorter samples mostly measure the encoder starting up (x265: 60-frame
+    # lookahead, 10 s keyframe interval).
     [[ $SAMPLE_DURATION =~ ^[0-9]+$ ]] && (( SAMPLE_DURATION >= 5 )) ||
         { echo "SAMPLE_DURATION '$SAMPLE_DURATION' is not a whole number of seconds from 5"; return 1; }
+}
+
+# Checks VMAF_TARGET_MEAN and VMAF_TARGET_LOW (the VMAF NEG gates: pooled
+# mean, and the 1%-low pooled and per scene): numbers from 0 to 100, the
+# 1%-low no higher than the mean. On a malformed value, prints what is
+# wrong and returns 1.
+parse_vmaf_targets() {
+    local name
+    for name in VMAF_TARGET_MEAN VMAF_TARGET_LOW; do
+        [[ ${!name} =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v v="${!name}" 'BEGIN { exit !(v <= 100) }' ||
+            { echo "$name '${!name}' is not a number from 0 to 100"; return 1; }
+    done
+    awk -v m="$VMAF_TARGET_MEAN" -v l="$VMAF_TARGET_LOW" 'BEGIN { exit !(l <= m) }' ||
+        { echo "VMAF_TARGET_LOW $VMAF_TARGET_LOW is above VMAF_TARGET_MEAN $VMAF_TARGET_MEAN"; return 1; }
+}
+
+# Checks QCOMP: a number from 0.5 to 1.0, the range x265 accepts. On a
+# malformed value, prints what is wrong and returns 1.
+parse_qcomp() {
+    [[ $QCOMP =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk -v q="$QCOMP" 'BEGIN { exit !(q >= 0.5 && q <= 1) }' ||
+        { echo "QCOMP '$QCOMP' is not a number from 0.5 to 1.0"; return 1; }
 }
 
 # Parses PRESETS ("preset:crf,crf,…;preset:crf,…") into PRESET_NAMES and
@@ -88,19 +107,19 @@ parse_presets() {
     [[ -n ${PRESETS:-} ]] || { echo "PRESETS is empty"; return 1; }
     IFS=';' read -r -a entries <<<"$PRESETS"
     for entry in "${entries[@]}"; do
-        if [[ ! $entry =~ ^([a-z]+):([0-9]+(\.[0-9]+)?(,[0-9]+(\.[0-9]+)?)*)$ ]]; then
+        if [[ ! $entry =~ ^([a-z0-9]+):([0-9]+(\.[0-9]+)?(,[0-9]+(\.[0-9]+)?)*)$ ]]; then
             echo "'$entry' is not preset:crf,crf,… (entries separated by ;)"
             return 1
         fi
         name=${BASH_REMATCH[1]}
         rank=$(preset_rank "$name")
-        [[ -n $rank ]] || { echo "'$name' is not an x265 preset (${X265_PRESETS[*]})"; return 1; }
+        [[ -n $rank ]] || { echo "'$name' is not an $ENCODER_LABEL preset (${ENCODER_PRESETS[*]})"; return 1; }
         [[ $seen == *" $name "* ]] && { echo "preset '$name' is given twice"; return 1; }
         seen+="$name "
         IFS=',' read -r -a crfs <<<"${BASH_REMATCH[2]}"
         prev=-1
         for crf in "${crfs[@]}"; do
-            awk -v c="$crf" 'BEGIN { exit !(c >= 0 && c <= 51) }' || { echo "$name: CRF $crf is outside 0–51"; return 1; }
+            awk -v c="$crf" -v m="$ENCODER_CRF_MAX" 'BEGIN { exit !(c >= 0 && c <= m) }' || { echo "$name: CRF $crf is outside 0–$ENCODER_CRF_MAX"; return 1; }
             # The walk goes up from the lowest CRF and stops at the first failure.
             awk -v c="$crf" -v p="$prev" 'BEGIN { exit !(c > p) }' || { echo "$name: CRFs must be in ascending order"; return 1; }
             prev=$crf

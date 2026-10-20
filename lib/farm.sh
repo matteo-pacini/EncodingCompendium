@@ -228,14 +228,6 @@ farm_schedule() {
 # Sets slot $1's bar: label $2, $3 frames per step.
 farm_label() { echo "$2" >"$FARM/slot-$1.label"; echo "$3" >"$FARM/slot-$1.total"; }
 
-# X265_PARAMS for slot $1: without asm on ARM, with the slot's NUMA pool.
-slot_params() {
-    local params=$X265_PARAMS
-    [[ -n ${SLOT_ARM[$1]} ]] && params=${params//:asm=avx512/}
-    [[ -n ${SLOT_POOLS[$1]} ]] && params+=":pools=${SLOT_POOLS[$1]}"
-    echo "$params"
-}
-
 ###############################################################################
 # Calibration
 ###############################################################################
@@ -250,8 +242,8 @@ farm_job_sample() {
     slot_put "$i" "$WORK/ref$n.mkv" "ref$n.mkv" || return
     {
         printf 'set -euo pipefail\n'
-        declare -p VF COLOUR_FLAGS DIST_FILTER REF_FILTER VMAF_OPTIONS
-        printf 'X265_PARAMS=%q\n' "$(slot_params "$i")"
+        declare -p VF DIST_FILTER REF_FILTER VMAF_OPTIONS DIST_DECODE
+        encoder_job_params "$i"
         declare -f encode_sample score_vmaf score_xpsnr xpsnr_y
         cat <<EOF
 enc=enc-$preset-$crf-$n.mkv log=vmaf-$preset-$crf-$n.json
@@ -261,9 +253,9 @@ encode_sample $preset $crf ref$n.mkv "\$enc" -nostats -progress pipe:1
 end=\$(date +%s.%N)
 frames=\$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "\$enc")
 echo step=VMAF
-score_vmaf "\$enc" ref$n.mkv "\$log" -nostats -progress pipe:1
+score_vmaf "\$enc" ref$n.mkv "\$log" -nostats -progress pipe:1 "\${DIST_DECODE[@]}"
 echo step=XPSNR
-score_xpsnr "\$enc" ref$n.mkv -nostats -progress pipe:1 2>xpsnr-$preset-$crf-$n.log
+score_xpsnr "\$enc" ref$n.mkv -nostats -progress pipe:1 "\${DIST_DECODE[@]}" 2>xpsnr-$preset-$crf-$n.log
 echo "result=\$frames \$(stat -c %s "\$enc") \$(awk -v s="\$start" -v e="\$end" 'BEGIN { printf "%f", e - s }') \$(xpsnr_y <xpsnr-$preset-$crf-$n.log)"
 rm -f "\$enc" xpsnr-$preset-$crf-$n.log
 EOF
@@ -453,15 +445,15 @@ plan_chunks() {
         item "No cut within ${CHUNK_WINDOWS[-1]} s of ${dropped[*]}: no join there, longer chunks instead"
 }
 
-# What the chunks depend on: the source, the preset, CRF, x265 settings,
+# What the chunks depend on: the source, the preset, CRF, encoder settings,
 # filters, scoring and chunk length, and the code that encodes and scores
 # them. The plan itself is read back from CHUNKS_FILE, not made again.
 chunks_fingerprint() {
     {
         stat -L -c '%s %Y' "$INPUT"
-        printf '%s\n' "$PRESET" "$SELECTED_CRF" "$X265_PARAMS" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" \
-            "$CHUNK_SECONDS" "${CHUNK_WINDOWS[*]}"
-        declare -f farm_job_chunk score_frames
+        printf '%s\n' "$PRESET" "$SELECTED_CRF" "$ENCODER_PARAMS" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" \
+            "$CHUNK_SECONDS" "${CHUNK_WINDOWS[*]}" "${DIST_DECODE[@]}"
+        declare -f farm_job_chunk encoder_command score_frames
     } | sha256sum | cut -d' ' -f1
 }
 
@@ -517,8 +509,8 @@ check_chunks_done() {
         progress "Checking chunk $((k + 1)) from an earlier run…"
         IFS=$'\t' read -r slot seconds bytes sha <<<"${CHUNK_DONE[$k]}"
         name=$(printf 'chunk-%03d' "$k") frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
-        if [[ -f $PARTS/$name.hevc && -f $PARTS/$name.tsv ]] && (( $(stat -c %s "$PARTS/$name.hevc") == bytes )) &&
-            (( $(wc -l <"$PARTS/$name.tsv") == frames )) && [[ $(sha256sum <"$PARTS/$name.hevc" | cut -d' ' -f1) == "$sha" ]]; then
+        if [[ -f $PARTS/$name.$VIDEO_EXT && -f $PARTS/$name.tsv ]] && (( $(stat -c %s "$PARTS/$name.$VIDEO_EXT") == bytes )) &&
+            (( $(wc -l <"$PARTS/$name.tsv") == frames )) && [[ $(sha256sum <"$PARTS/$name.$VIDEO_EXT" | cut -d' ' -f1) == "$sha" ]]; then
             echo "$k $frames - $seconds" >>"$FARM/video-done"
         else
             unset "CHUNK_DONE[$k]"
@@ -552,64 +544,55 @@ split_chunks() {
     ok "Split at source keyframes; every chunk has its planned frames"
 }
 
-# One chunk (`farm_job_chunk <slot> <k>`): ffmpeg decoding into the x265
-# CLI on the slot, with the chunk's frame count; all but the last chunk aim
-# to end with the VBV buffer back at 90%, the fullness the next one starts
-# from. Without the RPU: Dolby Vision goes in once the chunks are joined.
-# The slot then scores the chunk against its source (score_frames) into
-# $PARTS/<chunk>.tsv. Checked, the chunk is recorded in CHUNKS_FILE.
+# One chunk (`farm_job_chunk <slot> <k>`): ffmpeg decoding into the
+# encoder (encoder_command, given the slot, the chunk's frame count and
+# whether it is the last, and encoder_chunk_hdr's options) on the slot.
+# The slot then scores the chunk against
+# its source (score_frames) into $PARTS/<chunk>.tsv. Checked, the chunk is
+# recorded in CHUNKS_FILE.
 # A chunk's first frame has no predecessor for VMAF's motion or XPSNR's
 # temporal term: about 1 VMAF lower and XPSNR higher there than in one
 # pass over the film, on one frame per chunk.
 farm_job_chunk() {
-    local i=$1 k=$2 name frames cli=() arg skip="" end="" got
+    local i=$1 k=$2 name frames got ENCODE=() CHUNK_HDR_ARGS=()
     name=$(printf 'chunk-%03d' "$k")
     frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
     farm_label "$i" "chunk $((k + 1))/$CHUNKS" "$frames"
-    # X265_CLI without "--asm avx512" on ARM, where x265 rejects it.
-    for arg in "${X265_CLI[@]}"; do
-        if [[ -n $skip ]]; then skip=""; continue; fi
-        [[ -n ${SLOT_ARM[i]} && $arg == --asm ]] && { skip=1; continue; }
-        cli+=("$arg")
-    done
-    [[ -n ${SLOT_POOLS[i]} ]] && cli+=(--pools "${SLOT_POOLS[i]}")
-    # Over the last 5 s only: x265 steers toward the end fullness from frame
-    # --vbv-end-fr-adj (a fraction of --frames), by default the first, and
-    # a whole chunk near the VBV cap then came out 40% smaller.
-    (( k < CHUNKS - 1 )) &&
-        end="--vbv-end 0.9 --vbv-end-fr-adj $(awk -v n="$frames" -v r="$FPS" 'BEGIN { a = 1 - 5 * r / n; printf "%.3f", (a > 0 ? a : 0) }')"
+    encoder_chunk_hdr "$i" "$k" "$name" || return
+    encoder_command "$name.$VIDEO_EXT" "$i" "$frames" "$( ((k == CHUNKS - 1)) && echo 1)" "${CHUNK_HDR_ARGS[@]}"
     slot_put "$i" "$PARTS/$name.mkv" "$name.mkv" || return
     slot_run "$i" "$(
         printf 'set -euo pipefail\n'
-        declare -p DIST_FILTER REF_FILTER VMAF_OPTIONS
+        declare -p DIST_FILTER REF_FILTER VMAF_OPTIONS DIST_DECODE
+        encoder_job_params "$i"
         declare -f score_frames
         cat <<EOF
 echo step=encode
 start=\$SECONDS
 { ffmpeg -nostdin -v error -nostats -progress pipe:3 -i $name.mkv -map 0:v:0 $(printf '%q ' "${VF[@]}") -fps_mode passthrough \\
     -pix_fmt yuv420p10le -strict -1 -f yuv4mpegpipe - 3>&4 |
-    x265 --input - --y4m --preset $PRESET --crf $SELECTED_CRF --output-depth 10 --profile main10 $(printf '%q ' "${cli[@]}") \\
-        --frames $frames $end --log-level error --no-progress -o $name.hevc; } 4>&1
+    $(printf '%q ' "${ENCODE[@]}"); } 4>&1
 echo "result=\$((SECONDS - start))"
 echo step=score
 # A raw stream has no frame rate of its own: ffmpeg would take 25 fps.
-score_frames $name.hevc $name.mkv 0 $name.tsv -nostats -progress pipe:1 -framerate $V_FPS
+score_frames $name.$VIDEO_EXT $name.mkv 0 $name.tsv -nostats -progress pipe:1 -framerate $V_FPS "\${DIST_DECODE[@]}"
 rm -f $name.mkv
 EOF
     )" | farm_follow "$i" "chunk:$k"
     (( PIPESTATUS[0] == 0 )) || return "${PIPESTATUS[0]}"
-    slot_get "$i" "$name.hevc" "$PARTS/$name.hevc" || return
+    slot_get "$i" "$name.$VIDEO_EXT" "$PARTS/$name.$VIDEO_EXT" || return
     slot_get "$i" "$name.tsv" "$PARTS/$name.tsv" || return
-    slot_rm "$i" "$name.mkv"
-    got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.hevc" | wc -l)
-    (( got == frames )) || { rm -f "$PARTS/$name.hevc"; echo "$name.hevc has $got frames, not $frames" >&2; return 1; }
+    slot_rm "$i" "$name.mkv" "$name.rpu" "$name.json"
+    rm -f "$PARTS/$name.rpu" "$PARTS/$name.json"
+    got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.$VIDEO_EXT" | wc -l)
+    (( got == frames )) || { rm -f "$PARTS/$name.$VIDEO_EXT"; echo "$name.$VIDEO_EXT has $got frames, not $frames" >&2; return 1; }
     got=$(wc -l <"$PARTS/$name.tsv")
     (( got == frames )) || { rm -f "$PARTS/$name.tsv"; echo "$name.tsv scores $got frames, not $frames" >&2; return 1; }
     rm -f "$PARTS/$name.mkv"
     # One line appended per chunk (jobs run side by side), after every check.
     # Seconds of encoding, the score left out.
     printf 'encoded\t%d\t%s\t%s\t%s\t%s\n' "$k" "${SLOT_NAME[i]}" "$(<"$FARM/jobs/chunk_$k.result")" \
-        "$(stat -c %s "$PARTS/$name.hevc")" "$(sha256sum <"$PARTS/$name.hevc" | cut -d' ' -f1)" >>"$CHUNKS_FILE"
+        "$(stat -c %s "$PARTS/$name.$VIDEO_EXT")" "$(sha256sum <"$PARTS/$name.$VIDEO_EXT" | cut -d' ' -f1)" >>"$CHUNKS_FILE"
     echo "$k $frames $i $(<"$FARM/jobs/chunk_$k.result")" >>"$FARM/video-done"
 }
 
@@ -682,14 +665,14 @@ video_detail() {
 
 # Section 4's video step on every slot: plan (or, after load_chunks, check
 # what earlier runs did), split, encode the chunks still to do, join them
-# into VIDEO_HEVC and, with Dolby Vision, put the source RPU in.
+# into VIDEO_STREAM and, with encoder_join_hdr, put the HDR metadata in.
 farm_encode_video() {
     local k ran frames
     heading "Video on ${#SLOT_HOST[@]} slots"
     if [[ -n $DRY_RUN ]]; then
-        item "Chunks of ≈ $(hms "$CHUNK_SECONDS") joined at scene cuts, one x265 per slot:"
-        for i in "${!SLOT_HOST[@]}"; do setting "${SLOT_NAME[i]}" "x265 $PRESET CRF $SELECTED_CRF ${SLOT_POOLS[i]:+--pools ${SLOT_POOLS[i]} }${SLOT_ARM[i]:+(no asm) }${WRAP[${SLOT_HOST[i]}]:+under ${WRAP[${SLOT_HOST[i]}]}}"; done
-        [[ -n ${DV_PROFILE:-} ]] && setting "Dolby Vision" "dovi_tool inject-rpu on the joined stream"
+        item "Chunks of ≈ $(hms "$CHUNK_SECONDS") joined at scene cuts, one $ENCODER_LABEL per slot:"
+        for i in "${!SLOT_HOST[@]}"; do setting "${SLOT_NAME[i]}" "$ENCODER_LABEL $PRESET CRF $SELECTED_CRF$(encoder_slot_note "$i")${WRAP[${SLOT_HOST[i]}]:+ · under ${WRAP[${SLOT_HOST[i]}]}}"; done
+        [[ -n ${DV_PROFILE:-}${HAS_HDR10PLUS:-} ]] && setting "HDR metadata" "$FARM_HDR"
         return 0
     fi
     : >"$FARM/video-done"
@@ -722,14 +705,10 @@ farm_encode_video() {
     progress "Joining the chunks…"
     # The chunks stay until mux_parts removes PARTS, for a run cut short
     # while joining or muxing to go on from.
-    : >"$VIDEO_HEVC"
+    : >"$VIDEO_STREAM"
     for ((k = 0; k < CHUNKS; k++)); do
-        cat "$(printf '%s/chunk-%03d.hevc' "$PARTS" "$k")" >>"$VIDEO_HEVC"
+        cat "$(printf '%s/chunk-%03d.%s' "$PARTS" "$k" "$VIDEO_EXT")" >>"$VIDEO_STREAM"
     done
     progress ""
-    if [[ -n ${DV_PROFILE:-} ]]; then
-        progress "Putting the Dolby Vision RPU in…"
-        dovi_tool inject-rpu -i "$VIDEO_HEVC" --rpu-in "$RPU" -o "$VIDEO_HEVC.dv" >/dev/null && mv -f "$VIDEO_HEVC.dv" "$VIDEO_HEVC"
-        progress ""
-    fi
+    encoder_join_hdr
 }
