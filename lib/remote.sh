@@ -141,7 +141,7 @@ slot_stream() {
     local i=$1 name=$2
     shift 2
     if [[ ${SLOT_HOST[i]} == "$FARM_LOCAL" ]]; then
-        "$@" >"$PARTS/$name" && mkdir -p "$WORK/farm" && ln -sf "$PARTS/$name" "$WORK/farm/$name"
+        "$@" >"$PARTS/$name" && mkdir -p "$WORK/farm" && ln -sf "$(readlink -f "$PARTS/$name")" "$WORK/farm/$name"
     else
         # Under pipefail a failed command fails the copy, renamed in place or not.
         "$@" | ssh "${SSH_OPTS[@]}" "${SLOT_HOST[i]}" "mkdir -p $FARM_RDIR && cat > $FARM_RDIR/$name.$BASHPID && mv $FARM_RDIR/$name.$BASHPID $FARM_RDIR/$name"
