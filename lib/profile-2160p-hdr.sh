@@ -281,6 +281,27 @@ check_metadata_frames() {
         die "The $1 does not match the video's frame count"
 }
 
+# `extract_once <file> <command…>`: runs the command, which writes file,
+# unless an earlier run's file is there with the SHA-256 and command that
+# <file>.sha256 records; then records them.
+extract_once() {
+    local file=$1 key
+    shift
+    key=$(printf '%q ' "$@")
+    if [[ -z $DRY_RUN && -f $file && -f $file.sha256 ]]; then
+        progress "Hashing $(basename "$file") from an earlier run…"
+        if [[ $(<"$file.sha256") == "$(sha256sum <"$file" | cut -d' ' -f1) $key" ]]; then
+            progress ""
+            ok "$(basename "$file") from an earlier run, its hash as recorded"
+            return 0
+        fi
+        progress ""
+    fi
+    rm -f "$file.sha256"
+    run "$@"
+    [[ -n $DRY_RUN ]] || echo "$(sha256sum <"$file" | cut -d' ' -f1) $key" >"$file.sha256"
+}
+
 # Section 4, first: the intermediates' directory and its free space, and
 # the source's Dolby Vision RPU and HDR10+ metadata, with HDR_ARGS, the
 # encoder options that carry them.
@@ -292,7 +313,7 @@ encode_prepare() {
 
     if [[ -n $DV_PROFILE ]]; then
         heading "Dolby Vision RPU"
-        run "${DOVI_EXTRACT[@]}" -i "$INPUT" -o "$RPU"
+        extract_once "$RPU" "${DOVI_EXTRACT[@]}" -i "$INPUT" -o "$RPU"
         if [[ -z $DRY_RUN ]]; then
             SOURCE_RPU_FRAMES=$(rpu_frames "$RPU")
             check_metadata_frames "RPU" "$SOURCE_RPU_FRAMES"
@@ -300,7 +321,7 @@ encode_prepare() {
     fi
     if [[ -n $HAS_HDR10PLUS ]]; then
         heading "HDR10+ metadata"
-        run hdr10plus_tool extract -i "$INPUT" -o "$HDR10PLUS_JSON"
+        extract_once "$HDR10PLUS_JSON" hdr10plus_tool extract -i "$INPUT" -o "$HDR10PLUS_JSON"
         if [[ -z $DRY_RUN ]]; then
             SOURCE_HDR10PLUS_FRAMES=$(hdr10plus_frames "$HDR10PLUS_JSON")
             check_metadata_frames "HDR10+ metadata" "$SOURCE_HDR10PLUS_FRAMES"

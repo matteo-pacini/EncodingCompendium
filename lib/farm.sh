@@ -393,7 +393,7 @@ CHUNK_WINDOWS=(15 30 60)
 # keyframe the continuous encode does not have, which can band on dark
 # gradients.
 plan_chunks() {
-    local packets="$WORK/packets" targets k t w from scores best dropped=() lead
+    local packets="$WORK/packets" targets k t w from scores best dropped=() lead pts
     progress "Reading the video's packet index…"
     # "pts|pts_time|flags|packet number" per frame, in presentation order.
     ffprobe -v error -select_streams "$V" -show_entries packet=pts,pts_time,flags -of compact=p=0:nk=1 "$INPUT" |
@@ -418,8 +418,8 @@ plan_chunks() {
                 -vf "scale=960:-2,scdet=threshold=0,metadata=print:key=lavfi.scd.score" -f null - 2>&1 |
                 awk '/ pts:/ { sub(/.* pts:/, ""); p = $1 } /lavfi.scd.score=/ { sub(/.*=/, ""); print p, $1 }')
             # Only a keyframe as many packets into the stream as frames into
-            # the film, where split_chunks counts packets: an open-GOP one
-            # has a leading frame decoded after it, which a split there
+            # the film, where farm_job_chunk counts packets: an open-GOP one
+            # has a leading frame decoded after it, which a cut there
             # would cut off from its chunk.
             best=$(awk -F'|' -v t="$t" -v w="$w" -v prev="${CHUNK_START[-1]}" -v sc="$scores" '
                 BEGIN { n = split(sc, a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, " "); score[f[1]] = f[2] } }
@@ -437,6 +437,10 @@ plan_chunks() {
         CHUNK_START+=("$best")
     done
     progress ""
+    CHUNK_PTS=() CHUNK_TIME=()
+    while read -r pts t; do CHUNK_PTS+=("$pts") CHUNK_TIME+=("$t"); done < <(awk -F'|' -v s="${CHUNK_START[*]}" '
+        BEGIN { n = split(s, a, " "); for (i = 1; i <= n; i++) start[a[i]] = 1 }
+        (NR - 1) in start { print $1, $2 }' "$packets")
     CHUNK_START+=("$((lead + CHUNK_FRAMES_TOTAL))")
     CHUNKS=$(( ${#CHUNK_START[@]} - 1 ))
     kv "Chunks" "$CHUNKS of ≈ $(hms "$CHUNK_SECONDS") · $CHUNK_FRAMES_TOTAL frames"
@@ -458,21 +462,21 @@ chunks_fingerprint() {
 }
 
 # Reads CHUNKS_FILE (<output stem>.chunks, beside the output) when an
-# earlier run left one: its plan into CHUNK_START, CHUNKS and
-# CHUNK_FRAMES_TOTAL, the chunks it recorded into CHUNK_DONE (chunk →
+# earlier run left one: its plan into CHUNK_START, CHUNK_PTS and CHUNK_TIME
+# (each chunk's first pts and pts_time), CHUNKS and CHUNK_FRAMES_TOTAL, the chunks it recorded into CHUNK_DONE (chunk →
 # "slot\tseconds\tbytes\tsha256"), and YES, the encode being confirmed
 # already. Dies when the file is from other settings, rather than join
 # chunks of two encodes.
 load_chunks() {
-    local kind k a b c d fingerprint="" end=""
+    local kind k a b c d e fingerprint="" end=""
     CHUNKS_FILE="${OUTPUT%.mkv}.chunks"
-    CHUNK_START=()
+    CHUNK_START=() CHUNK_PTS=() CHUNK_TIME=()
     declare -gA CHUNK_DONE=()
     [[ -f $CHUNKS_FILE ]] || return 0
-    while IFS=$'\t' read -r kind k a b c d; do
+    while IFS=$'\t' read -r kind k a b c d e; do
         case $kind in
             fingerprint) fingerprint=$k ;;
-            plan) CHUNK_START[k]=$a end=$((a + b)) ;;
+            plan) CHUNK_START[k]=$a CHUNK_PTS[k]=$c CHUNK_TIME[k]=$d end=$((a + b)) ;;
             encoded) CHUNK_DONE[$k]=$a$'\t'$b$'\t'$c$'\t'$d ;;
         esac
     done <"$CHUNKS_FILE"
@@ -493,7 +497,7 @@ write_chunks_plan() {
         echo "# $(basename "$0") chunks of $(basename "$OUTPUT"): the plan, then each chunk once checked — delete with $(basename "$PARTS") to start over"
         printf 'fingerprint\t%s\n' "$(chunks_fingerprint)"
         for ((k = 0; k < CHUNKS; k++)); do
-            printf 'plan\t%d\t%d\t%d\n' "$k" "${CHUNK_START[k]}" $(( CHUNK_START[k + 1] - CHUNK_START[k] ))
+            printf 'plan\t%d\t%d\t%d\t%s\t%s\n' "$k" "${CHUNK_START[k]}" $(( CHUNK_START[k + 1] - CHUNK_START[k] )) "${CHUNK_PTS[k]}" "${CHUNK_TIME[k]}"
         done
     } >"$CHUNKS_FILE.tmp"
     mv "$CHUNKS_FILE.tmp" "$CHUNKS_FILE"
@@ -524,28 +528,9 @@ check_chunks_done() {
     (( ${#lost[@]} == 0 )) || warn "Missing or changed since recorded, so encoded again: chunk $(ranges "${lost[@]}")"
 }
 
-# Splits the video at the planned joins into $PARTS/chunk-<k>.mkv and
-# checks each has its planned frames.
-split_chunks() {
-    local k got want
-    progress "Splitting the video into $CHUNKS chunks…"
-    # By packet number, not time: on an H.264 source, -segment_times passed
-    # over the planned keyframe to the next one.
-    ffmpeg -nostdin -v error -i "$INPUT" -map 0:"$V" -c copy -f segment -segment_frames "$(IFS=,; echo "${CHUNK_START[*]:1:CHUNKS-1}")" \
-        -reset_timestamps 1 "$PARTS/chunk-%03d.mkv"
-    for ((k = 0; k < CHUNKS; k++)); do
-        progress "Checking chunk $((k + 1))/$CHUNKS…"
-        got=$(ffprobe -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 "$(printf '%s/chunk-%03d.mkv' "$PARTS" "$k")" | wc -l)
-        # The first chunk holds the packets of the frames before it too.
-        want=$(( CHUNK_START[k + 1] - (k > 0 ? CHUNK_START[k] : 0) ))
-        (( got == want )) || die "chunk $k has $got frames, planned $want"
-    done
-    progress ""
-    ok "Split at source keyframes; every chunk has its planned frames"
-}
-
-# One chunk (`farm_job_chunk <slot> <k>`): ffmpeg decoding into the
-# encoder (encoder_command, given the slot, the chunk's frame count and
+# One chunk (`farm_job_chunk <slot> <k>`): its packets cut from the source
+# as they are sent to the slot, where the cut is checked against the plan;
+# then ffmpeg decoding into the encoder (encoder_command, given the slot, the chunk's frame count and
 # whether it is the last) on the slot. Without the HDR metadata, which
 # encoder_join_hdr puts in once the chunks are joined.
 # The slot then scores the chunk against
@@ -555,18 +540,31 @@ split_chunks() {
 # temporal term: about 1 VMAF lower and XPSNR higher there than in one
 # pass over the film, on one frame per chunk.
 farm_job_chunk() {
-    local i=$1 k=$2 name frames got ENCODE=()
+    local i=$1 k=$2 name frames packets got chunk_cut ENCODE=()
     name=$(printf 'chunk-%03d' "$k")
     frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
+    # The first chunk holds the packets of the frames before it too.
+    packets=$(( CHUNK_START[k + 1] - (k > 0 ? CHUNK_START[k] : 0) ))
     farm_label "$i" "chunk $((k + 1))/$CHUNKS" "$frames"
     encoder_command "$name.$VIDEO_EXT" "$i" "$frames" "$( ((k == CHUNKS - 1)) && echo 1)"
-    slot_put "$i" "$PARTS/$name.mkv" "$name.mkv" || return
+    # -ss lands on the cue at or before the keyframe, cues being sparser than
+    # keyframes: the packets before it are dropped by pts, which -copyts keeps
+    # as the source's (scoring retimes by frame number).
+    chunk_cut=(ffmpeg -nostdin -v error -copyts)
+    (( k == 0 )) || chunk_cut+=(-ss "${CHUNK_TIME[k]}")
+    chunk_cut+=(-i "$INPUT" -map 0:"$V" -c copy)
+    (( k == 0 )) || chunk_cut+=(-bsf:v "noise=drop=lt(pts\,${CHUNK_PTS[k]})")
+    chunk_cut+=(-frames:v "$packets" -f matroska -)
+    slot_stream "$i" "$name.mkv" "${chunk_cut[@]}" || return
     slot_run "$i" "$(
         printf 'set -euo pipefail\n'
         declare -p DIST_FILTER REF_FILTER VMAF_OPTIONS
         encoder_job_params "$i"
         declare -f score_frames
         cat <<EOF
+read -r got first < <(ffprobe -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 $name.mkv | awk 'NR == 1 { f = \$1 } END { print NR, f }')
+[[ \$got == $packets && ( $k == 0 || \$first == ${CHUNK_TIME[k]} ) ]] ||
+    { echo "$name.mkv cut with \$got packets from \$first, not $packets from ${CHUNK_TIME[k]}" >&2; exit 1; }
 echo step=encode
 start=\$SECONDS
 { ffmpeg -nostdin -v error -nostats -progress pipe:3 -i $name.mkv -map 0:v:0 $(printf '%q ' "${VF[@]}") -fps_mode passthrough \\
@@ -663,7 +661,7 @@ video_detail() {
 }
 
 # Section 4's video step on every slot: plan (or, after load_chunks, check
-# what earlier runs did), split, encode the chunks still to do, join them
+# what earlier runs did), encode the chunks still to do, join them
 # into VIDEO_STREAM and, with encoder_join_hdr, put the HDR metadata in.
 farm_encode_video() {
     local k ran frames
@@ -686,13 +684,6 @@ farm_encode_video() {
     for ((k = 0; k < CHUNKS; k++)); do [[ -n ${CHUNK_DONE[$k]:-} ]] || FARM_QUEUE+=("chunk:$k"); done
     ENCODE_SECONDS=0
     if (( ${#FARM_QUEUE[@]} > 0 )); then
-        # The split video beside the intermediates the single-host encode needs.
-        local need free
-        need=$(awk -v v="$(stream_bps "$V")" -v d="$DURATION" -v s="$SELECTED_SIZE" 'BEGIN { printf "%.0f", v * d / 8 + s * 2.2 }')
-        free=$(df --output=avail -B1 "$PARTS" | tail -1)
-        (( free >= need )) || die "Needs ≈ $(human_bytes "$need") free beside the output for the chunks, $(human_bytes "$free") available"
-        split_chunks
-        for k in "${!CHUNK_DONE[@]}"; do rm -f "$(printf '%s/chunk-%03d.mkv' "$PARTS" "$k")"; done
         FARM_TOTAL=video_total FARM_DETAIL=video_detail FARM_VIDEO_START=$SECONDS
         ENCODE_START=$SECONDS
         farm_schedule

@@ -135,6 +135,19 @@ slot_put() {
     mkdir -p "${mark%/*}" && touch "$mark"
 }
 
+# Writes the output of command $3… to the scratch directory of slot $1's
+# host as $2: on this host, in PARTS (WORK may be a small /tmp), linked.
+slot_stream() {
+    local i=$1 name=$2
+    shift 2
+    if [[ ${SLOT_HOST[i]} == "$FARM_LOCAL" ]]; then
+        "$@" >"$PARTS/$name" && mkdir -p "$WORK/farm" && ln -sf "$PARTS/$name" "$WORK/farm/$name"
+    else
+        # Under pipefail a failed command fails the copy, renamed in place or not.
+        "$@" | ssh "${SSH_OPTS[@]}" "${SLOT_HOST[i]}" "mkdir -p $FARM_RDIR && cat > $FARM_RDIR/$name.$BASHPID && mv $FARM_RDIR/$name.$BASHPID $FARM_RDIR/$name"
+    fi
+}
+
 # Moves $2 from the scratch directory of slot $1's host to local file $3.
 slot_get() {
     if [[ ${SLOT_HOST[$1]} == "$FARM_LOCAL" ]]; then

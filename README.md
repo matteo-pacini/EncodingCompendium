@@ -34,11 +34,11 @@ farm.sh --worker 'box1=nice -n 10' --worker box2 movie.mkv
 A worker needs an SSH alias with key login, and Nix. It fetches its tools from this flake at the master's commit, so that commit must be pushed. The optional `=wrapper` runs every job on that host under the given command.
 
 - Each host gets one slot per NUMA node, and calibration samples run on every slot.
-- The video is split into ≈ 3 min chunks at scene cuts. The chunks are encoded on every slot, with faster slots taking more, and each chunk is scored on the slot that encoded it.
+- The video is split into ≈ 3 min chunks at scene cuts. Each chunk is cut from the source as it is sent, so the master keeps no copy of the video. The chunks are encoded on every slot, with faster slots taking more, and each chunk is scored on the slot that encoded it.
 - The master joins the chunks and adds Dolby Vision and HDR10+.
 - A failed chunk is retried, and an unreachable host's chunks go to the other hosts.
 - `--no-local` leaves the master out of the encoding. With no `--worker`, the master encodes alone.
-- `--stop-at 07:00` starts no chunk that would end later, and stops there. Returned chunks are recorded in a `.chunks` file, so running the same command again carries on.
+- `--stop-at 07:00` starts no chunk that would end later, and stops there. Returned chunks are recorded in a `.chunks` file, so running the same command again carries on. The Dolby Vision RPU and HDR10+ metadata are kept too, and reused when their SHA-256 still matches.
 - The whole film is always scored.
 
 # Software Requirements
