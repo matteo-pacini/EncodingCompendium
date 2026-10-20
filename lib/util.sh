@@ -69,8 +69,8 @@ parse_sampling() {
     [[ $SAMPLE_PERCENT =~ ^[0-9]+(\.[0-9]+)?$ ]] &&
         awk -v p="$SAMPLE_PERCENT" 'BEGIN { exit !(p > 0 && p <= 90) }' ||
         { echo "SAMPLE_PERCENT '$SAMPLE_PERCENT' is not a number above 0 and at most 90"; return 1; }
-    # Shorter samples mostly measure the encoder starting up (x265: 60-frame
-    # lookahead, 10 s keyframe interval).
+    # Shorter samples mostly measure the encoder starting up (lookahead,
+    # 10 s keyframe interval).
     [[ $SAMPLE_DURATION =~ ^[0-9]+$ ]] && (( SAMPLE_DURATION >= 5 )) ||
         { echo "SAMPLE_DURATION '$SAMPLE_DURATION' is not a whole number of seconds from 5"; return 1; }
 }
@@ -189,7 +189,7 @@ setup_workdir() {
 
 cleanup() {
     kill_tree $$
-    # A script with work elsewhere (hevc-farm.sh's workers) cleans it up here.
+    # A script with work elsewhere (farm.sh's workers) cleans it up here.
     if declare -F cleanup_hook >/dev/null; then cleanup_hook; fi
     rm -rf "$WORK"
     # An interrupted encode cannot be resumed.

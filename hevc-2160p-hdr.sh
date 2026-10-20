@@ -3,7 +3,8 @@
 # Analyse a 2160p HDR UHD Blu-ray remux (HDR10, optionally Dolby Vision and
 # HDR10+) and convert it to HEVC Main10 HDR10 — plus Dolby Vision profile 8.1
 # and HDR10+ when the source has them — within Level 5.1 High tier
-# (160 Mb/s VBV), so any decoder of that level plays it. HDR is kept as-is: no tone mapping.
+# (160 Mb/s VBV), so any decoder of that level plays it. HDR is kept as-is:
+# no tone mapping.
 #
 # Usage: hevc-2160p-hdr.sh [--dry-run] [--score] [--yes] [--start-at <time>] <input.mkv>
 #

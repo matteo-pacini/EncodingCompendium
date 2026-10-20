@@ -6,8 +6,8 @@ ORIGINAL_MEDIA_TYPE="Blu-ray"
 
 # Sets MOVIE_TITLE, MOVIE_DIR (the film's folder beside INPUT, named after
 # MOVIE_TITLE) and OUTPUT in it from INPUT, and prints the section 2
-# container plan. An entry script may define `rename_stem <stem>` to rewrite
-# further parts of the output name.
+# container plan. The encoder layer may define `rename_stem <stem>` to
+# rewrite further parts of the output name.
 plan_container() {
     local stem
     stem=$(basename "${INPUT%.*}")
@@ -60,6 +60,7 @@ plan_output() {
         "ENCODER_SETTINGS=$ENCODER_NAME preset=$PRESET crf=$SELECTED_CRF $ENCODER_PARAMS"
         "CALIBRATION_DATE=$ANALYSIS_CREATED"
         "CALIBRATION_SAMPLES=$CALIBRATION_SAMPLES × $SAMPLE_DURATION s ($SAMPLE_PERCENT% of the film)"
+        "CALIBRATION_GATES=VMAF NEG mean ≥ $VMAF_TARGET_MEAN · 1%-low ≥ $VMAF_TARGET_LOW · CAMBI ≤ $CAMBI_MAX"
         "CALIBRATION_VMAF_NEG_MEAN=$(printf '%.2f' "${fields[1]}")"
         "CALIBRATION_VMAF_NEG_1PCT_LOW=$(printf '%.2f' "${fields[2]}")"
         "CALIBRATION_CAMBI_MAX=$(printf '%.3f' "${fields[4]}")"

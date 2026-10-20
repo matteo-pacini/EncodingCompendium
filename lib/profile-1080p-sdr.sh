@@ -1,7 +1,6 @@
 # The 1080p SDR profile: Blu-ray remux to HEVC Main10 within Level 4.1
-# Main tier. Sourced by hevc-1080p-sdr.sh and hevc-farm.sh after the
+# Main tier. Sourced by hevc-1080p-sdr.sh and farm.sh after the
 # other lib/ files; each function is one section's profile-specific part.
-# The AV1 profile builds on it: its analysis, filters and gates.
 
 # shellcheck source=/dev/null
 source "$LIB/encoder-x265.sh"
@@ -56,7 +55,7 @@ profile_analysis() {
     report_chapters
     report_observations
 
-    [[ -n $V_IS_HDR ]] && die "HDR source — this script only handles SDR 1080p (see hevc-2160p-hdr.sh)"
+    [[ -n $V_IS_HDR ]] && die "HDR source — this script only handles SDR 1080p (use the 2160p HDR script)"
     return 0
 }
 

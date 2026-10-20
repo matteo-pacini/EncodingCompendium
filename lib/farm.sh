@@ -1,4 +1,4 @@
-# hevc-farm.sh's distributed work: a job scheduler over the slots that
+# farm.sh's distributed work: a job scheduler over the slots that
 # lib/remote.sh found, with one progress bar per slot, then calibration and
 # the video encode split into jobs. Sourced after the other lib/ files.
 #
@@ -242,7 +242,7 @@ farm_job_sample() {
     slot_put "$i" "$WORK/ref$n.mkv" "ref$n.mkv" || return
     {
         printf 'set -euo pipefail\n'
-        declare -p VF DIST_FILTER REF_FILTER VMAF_OPTIONS DIST_DECODE
+        declare -p VF DIST_FILTER REF_FILTER VMAF_OPTIONS
         encoder_job_params "$i"
         declare -f encode_sample score_vmaf score_xpsnr xpsnr_y
         cat <<EOF
@@ -253,9 +253,9 @@ encode_sample $preset $crf ref$n.mkv "\$enc" -nostats -progress pipe:1
 end=\$(date +%s.%N)
 frames=\$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "\$enc")
 echo step=VMAF
-score_vmaf "\$enc" ref$n.mkv "\$log" -nostats -progress pipe:1 "\${DIST_DECODE[@]}"
+score_vmaf "\$enc" ref$n.mkv "\$log" -nostats -progress pipe:1
 echo step=XPSNR
-score_xpsnr "\$enc" ref$n.mkv -nostats -progress pipe:1 "\${DIST_DECODE[@]}" 2>xpsnr-$preset-$crf-$n.log
+score_xpsnr "\$enc" ref$n.mkv -nostats -progress pipe:1 2>xpsnr-$preset-$crf-$n.log
 echo "result=\$frames \$(stat -c %s "\$enc") \$(awk -v s="\$start" -v e="\$end" 'BEGIN { printf "%f", e - s }') \$(xpsnr_y <xpsnr-$preset-$crf-$n.log)"
 rm -f "\$enc" xpsnr-$preset-$crf-$n.log
 EOF
@@ -452,8 +452,8 @@ chunks_fingerprint() {
     {
         stat -L -c '%s %Y' "$INPUT"
         printf '%s\n' "$PRESET" "$SELECTED_CRF" "$ENCODER_PARAMS" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" \
-            "$CHUNK_SECONDS" "${CHUNK_WINDOWS[*]}" "${DIST_DECODE[@]}"
-        declare -f farm_job_chunk encoder_command score_frames
+            "$CHUNK_SECONDS" "${CHUNK_WINDOWS[*]}" "${DV_PROFILE:-}${HAS_HDR10PLUS:-}"
+        declare -f farm_job_chunk encoder_command score_frames x265_cli_args
     } | sha256sum | cut -d' ' -f1
 }
 
@@ -546,7 +546,8 @@ split_chunks() {
 
 # One chunk (`farm_job_chunk <slot> <k>`): ffmpeg decoding into the
 # encoder (encoder_command, given the slot, the chunk's frame count and
-# whether it is the last, and encoder_chunk_hdr's options) on the slot.
+# whether it is the last) on the slot. Without the HDR metadata, which
+# encoder_join_hdr puts in once the chunks are joined.
 # The slot then scores the chunk against
 # its source (score_frames) into $PARTS/<chunk>.tsv. Checked, the chunk is
 # recorded in CHUNKS_FILE.
@@ -554,16 +555,15 @@ split_chunks() {
 # temporal term: about 1 VMAF lower and XPSNR higher there than in one
 # pass over the film, on one frame per chunk.
 farm_job_chunk() {
-    local i=$1 k=$2 name frames got ENCODE=() CHUNK_HDR_ARGS=()
+    local i=$1 k=$2 name frames got ENCODE=()
     name=$(printf 'chunk-%03d' "$k")
     frames=$(( CHUNK_START[k + 1] - CHUNK_START[k] ))
     farm_label "$i" "chunk $((k + 1))/$CHUNKS" "$frames"
-    encoder_chunk_hdr "$i" "$k" "$name" || return
-    encoder_command "$name.$VIDEO_EXT" "$i" "$frames" "$( ((k == CHUNKS - 1)) && echo 1)" "${CHUNK_HDR_ARGS[@]}"
+    encoder_command "$name.$VIDEO_EXT" "$i" "$frames" "$( ((k == CHUNKS - 1)) && echo 1)"
     slot_put "$i" "$PARTS/$name.mkv" "$name.mkv" || return
     slot_run "$i" "$(
         printf 'set -euo pipefail\n'
-        declare -p DIST_FILTER REF_FILTER VMAF_OPTIONS DIST_DECODE
+        declare -p DIST_FILTER REF_FILTER VMAF_OPTIONS
         encoder_job_params "$i"
         declare -f score_frames
         cat <<EOF
@@ -575,15 +575,14 @@ start=\$SECONDS
 echo "result=\$((SECONDS - start))"
 echo step=score
 # A raw stream has no frame rate of its own: ffmpeg would take 25 fps.
-score_frames $name.$VIDEO_EXT $name.mkv 0 $name.tsv -nostats -progress pipe:1 -framerate $V_FPS "\${DIST_DECODE[@]}"
+score_frames $name.$VIDEO_EXT $name.mkv 0 $name.tsv -nostats -progress pipe:1 -framerate $V_FPS
 rm -f $name.mkv
 EOF
     )" | farm_follow "$i" "chunk:$k"
     (( PIPESTATUS[0] == 0 )) || return "${PIPESTATUS[0]}"
     slot_get "$i" "$name.$VIDEO_EXT" "$PARTS/$name.$VIDEO_EXT" || return
     slot_get "$i" "$name.tsv" "$PARTS/$name.tsv" || return
-    slot_rm "$i" "$name.mkv" "$name.rpu" "$name.json"
-    rm -f "$PARTS/$name.rpu" "$PARTS/$name.json"
+    slot_rm "$i" "$name.mkv"
     got=$(ffprobe -v error -show_entries packet=size -of csv=p=0 "$PARTS/$name.$VIDEO_EXT" | wc -l)
     (( got == frames )) || { rm -f "$PARTS/$name.$VIDEO_EXT"; echo "$name.$VIDEO_EXT has $got frames, not $frames" >&2; return 1; }
     got=$(wc -l <"$PARTS/$name.tsv")

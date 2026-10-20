@@ -12,8 +12,8 @@
 #
 # The entry script provides: PRESETS (parsed by parse_presets) ENCODER_PARAMS
 # VF REF_FILTER DIST_FILTER VMAF_OPTIONS VMAF_TARGET_MEAN VMAF_TARGET_LOW
-# CAMBI_MAX KNEE_RATIO SAMPLE_PERCENT SAMPLE_DURATION, optionally
-# COLOUR_FLAGS and DIST_DECODE, and `encode_sample <preset> <crf> <in>
+# CAMBI_MAX KNEE_RATIO SAMPLE_PERCENT SAMPLE_DURATION COLOUR_FLAGS, and
+# `encode_sample <preset> <crf> <in>
 # <out> [ffmpeg options…]`, which passes the extra options to ffmpeg before
 # its input (they request -progress output on stdout).
 #
@@ -26,10 +26,6 @@
 sample_count() {
     awk -v p="$SAMPLE_PERCENT" -v d="$DURATION" -v l="$SAMPLE_DURATION" 'BEGIN { n = p / 100 * d / l; c = int(n); print (c < n ? c + 1 : c) }'
 }
-
-# ffmpeg input options for decoding an encode to score it, set by a profile
-# that needs them (AV1: film grain left unapplied).
-DIST_DECODE=()
 
 # A slower preset is only worth it for a file this much smaller.
 SIZE_TOLERANCE=0.10
@@ -111,7 +107,7 @@ preset_fingerprint() {
     {
         stat -L -c '%s %Y' "$INPUT"
         printf '%s\n' "$1" "${ENCODER_PARAMS//:asm=avx512/}" "${COLOUR_FLAGS[*]}" "$CROP" "$CALIBRATION_SAMPLES" \
-            "$SAMPLE_DURATION" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" "$A" "$STEREO_BITRATE" "${DIST_DECODE[@]}"
+            "$SAMPLE_DURATION" "${VF[*]}" "$REF_FILTER" "$DIST_FILTER" "$VMAF_OPTIONS" "$A" "$STEREO_BITRATE"
         declare -f cut_samples encode_sample score_vmaf score_xpsnr aggregate_crf
     } | sha256sum | cut -d' ' -f1
 }
@@ -333,9 +329,9 @@ measure_crf() {
         run_step 0 "${SAMPLE_FRAMES[n]}" encode_sample "$preset" "$crf" "$ref" "$enc" -nostats -progress pipe:1
         end=$(date +%s.%N)
         frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$enc")
-        run_step 1 "$frames" score_vmaf "$enc" "$ref" "$log" -nostats -progress pipe:1 "${DIST_DECODE[@]}"
+        run_step 1 "$frames" score_vmaf "$enc" "$ref" "$log" -nostats -progress pipe:1
         # XPSNR's summary is on stderr; stdout carries the progress.
-        run_step 2 "$frames" score_xpsnr "$enc" "$ref" -nostats -progress pipe:1 "${DIST_DECODE[@]}" 2>"$WORK/xpsnr.log"
+        run_step 2 "$frames" score_xpsnr "$enc" "$ref" -nostats -progress pipe:1 2>"$WORK/xpsnr.log"
         echo "$frames $(stat -c %s "$enc") $(awk -v s="$start" -v e="$end" 'BEGIN { printf "%f", e - s }') $(xpsnr_y <"$WORK/xpsnr.log")" \
             >"$WORK/result-$preset-$crf-$n"
     done
@@ -453,7 +449,7 @@ walk_preset() {
     RES_ROWS[$preset]=$(printf '%s\n' "${CALIBRATED_ROWS[@]}")
 }
 
-# Slots the full encode runs on at once (hevc-farm.sh sets more): each
+# Slots the full encode runs on at once (farm.sh sets more): each
 # sample was measured on one slot, so they add up.
 ENCODE_SLOTS=1
 

@@ -6,25 +6,30 @@ of that level plays them. README.md has the usage.
 
 ## Layout
 
-- `hevc-1080p-sdr.sh`, `hevc-2160p-hdr.sh`: single host. `hevc-farm.sh`:
+- `hevc-1080p-sdr.sh`, `hevc-2160p-hdr.sh`: single host. `farm.sh`:
   either profile over SSH workers. Each entry script only runs sections
   0–5 in order; the work is in `lib/`.
-- `lib/profile-*.sh`: everything profile-specific. The rest of `lib/` is
-  shared: `calibrate` (CRF walk and gates), `score` (whole-film VMAF NEG,
-  CAMBI, XPSNR), `parts` (encode and mkvmerge mux), `farm` and `remote`
-  (scheduler, chunks, workers), `mux`, `probe`, `ui`, `util`.
+- `lib/profile-*.sh`: everything profile-specific. `lib/encoder-x265.sh`:
+  the encoder (command, presets, HDR metadata, farm probes) behind the
+  names the rest of `lib/` uses. The rest is shared: `calibrate`
+  (CRF walk and gates), `score` (whole-film VMAF NEG, CAMBI, XPSNR),
+  `parts` (encode and mkvmerge mux), `farm` and `remote`
+  (scheduler, chunks, workers), `mux`, `probe`, `audio`, `requirements`,
+  `ui`, `util`.
 - `nix/flake.nix`: the tools, the dev shell and one package per script.
 
 ## Develop
 
 - `nix develop path:./nix` gives every tool, shellcheck included.
-- `shellcheck -x hevc-*.sh lib/*.sh` must pass; `.shellcheckrc` says why
-  some checks are off. Fix findings rather than disabling them inline.
+- `shellcheck -x *.sh lib/*.sh` must pass; `.shellcheckrc`
+  says why some checks are off. Fix findings rather than disabling them
+  inline.
 - Match the existing style: `set -euo pipefail`, 4-space indent, a comment
   above each function stating its contract, and comments only for why.
   Output goes through the `ui.sh` helpers and fits 78 columns.
 - The `.analysis` cache is keyed on a fingerprint of the encode and scoring
-  settings and functions; `.chunks` on `farm_job_chunk` and `score_frames`.
+  settings and functions; `.chunks` on `chunks_fingerprint`'s list
+  (`farm_job_chunk`, the encoder's command, `score_frames`).
   Changing those invalidates stored results, on purpose.
 - The level and VBV are the compatibility contract: do not raise them or
   add tools the level forbids.

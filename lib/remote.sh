@@ -1,11 +1,11 @@
-# Worker hosts for hevc-farm.sh: the --worker options, running a job on a
+# Worker hosts for farm.sh: the --worker options, running a job on a
 # slot, moving files, and probing every host into slots in section 0.
-# Sourced by hevc-farm.sh after util.sh and ui.sh.
+# Sourced by farm.sh after util.sh and ui.sh.
 #
 # A job is a bash script the master writes; a worker needs only SSH keys
 # (the alias in ~/.ssh/config), Nix and this repository's flake, which it
 # fetches as FARM_REF. Each host works in its own scratch directory, removed
-# at exit: $HOME/hevc-farm/<run> on a worker, $WORK/farm on this host.
+# at exit: $HOME/encoding-farm/<run> on a worker, $WORK/farm on this host.
 #
 # Slots, one per NUMA node of each host (indexed together): SLOT_HOST,
 # SLOT_NAME, SLOT_CPUS (a CPU list to pin to, or empty), SLOT_POOLS (x265
@@ -13,18 +13,17 @@
 # x265 must not be given asm=avx512).
 
 FARM_LOCAL=$(hostname -s)
-FARM_RDIR="hevc-farm/$FARM_LOCAL-$$"
+FARM_RDIR="encoding-farm/$FARM_LOCAL-$$"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o Compression=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4
-    -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/hevc-farm-%C" -o ControlPersist=60)
+    -o ControlMaster=auto -o "ControlPath=$HOME/.ssh/encoding-farm-%C" -o ControlPersist=60)
 
 # Parses `[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>]
-# [--codec hevc|av1] [--no-local] [--worker alias[=wrapper]]… <input.mkv>`
-# into DRY_RUN, YES, START_AT and STOP_AT (epoch seconds), CODEC (default
-# hevc), NO_LOCAL, INPUT, WORKERS and WRAP (alias → wrapper command, which
+# [--no-local] [--worker alias[=wrapper]]… <input.mkv>` into DRY_RUN, YES,
+# START_AT and STOP_AT (epoch seconds), NO_LOCAL, INPUT, WORKERS and WRAP (alias → wrapper command, which
 # every job on that host runs under).
 farm_parse_args() {
-    local start="" stop="" usage="[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>] [--codec hevc|av1] [--no-local] [--worker alias[=wrapper]]… <input.mkv>"
-    DRY_RUN="" YES="" START_AT="" STOP_AT="" CODEC=hevc NO_LOCAL="" WORKERS=()
+    local start="" stop="" usage="[--dry-run] [--yes] [--start-at <time>] [--stop-at <time>] [--no-local] [--worker alias[=wrapper]]… <input.mkv>"
+    DRY_RUN="" YES="" START_AT="" STOP_AT="" NO_LOCAL="" WORKERS=()
     declare -gA WRAP=()
     while (($#)); do
         case $1 in
@@ -32,7 +31,6 @@ farm_parse_args() {
             --yes) YES=--yes ;;
             --start-at) (($# >= 2)) || die "--start-at needs a time"; start=$2; shift ;;
             --stop-at) (($# >= 2)) || die "--stop-at needs a time"; stop=$2; shift ;;
-            --codec) (($# >= 2)) || die "--codec needs hevc or av1"; CODEC=$2; shift ;;
             --no-local) NO_LOCAL=1 ;;
             --worker) (($# >= 2)) || die "--worker needs alias[=wrapper]"; add_worker "$2"; shift ;;
             --worker=*) add_worker "${1#--worker=}" ;;
@@ -44,7 +42,6 @@ farm_parse_args() {
     (($# == 1)) || die "Usage: $(basename "$0") $usage"
     INPUT=$1
     [[ -f $INPUT ]] || die "No such file: $INPUT"
-    [[ $CODEC == hevc || $CODEC == av1 ]] || die "--codec $CODEC: hevc or av1"
     [[ ${#WORKERS[@]} -gt 0 || -z $NO_LOCAL ]] || die "--no-local needs at least one --worker"
     [[ -z $start ]] || START_AT=$(parse_when --start-at "$start" "$EPOCHSECONDS") || exit 1
     if [[ -n $stop ]]; then

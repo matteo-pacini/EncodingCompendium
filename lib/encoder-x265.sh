@@ -1,6 +1,6 @@
 # The x265 encoder: its presets, the x265 CLI that the full encode and the
-# farm's chunks run, and what hevc-farm.sh checks on each host. Sourced by
-# the HEVC profiles. lib/encoder-svtav1.sh defines the same names for AV1:
+# farm's chunks run, and what farm.sh checks on each host. Sourced by the
+# profiles; the rest of lib/ only uses these names:
 #
 #   ENCODER_LABEL     the encoder as the reports name it
 #   ENCODER_NAME      its name in the ENCODER_SETTINGS tag
@@ -9,10 +9,11 @@
 #   VIDEO_EXT         extension of the raw stream encoded and joined
 #   VIDEO_CODEC       ffprobe's "codec_name profile" for the output's video
 #   DV_TARGET         the Dolby Vision profile it writes, at 2160p
+#   PRESETS_EXAMPLE   a PRESETS value to show when one is malformed
 #   FARM_HDR          how the farm carries Dolby Vision and HDR10+
 #   encoder_preset_ok, encoder_prepare, encoder_command, encoder_job_params,
 #   encoder_slot_note, encoder_probe_script, encoder_hdr_args,
-#   encoder_stream_hdr, encoder_chunk_hdr, encoder_join_hdr (below)
+#   encoder_stream_hdr, encoder_join_hdr (below)
 #
 # The profile sets ENCODER_PARAMS, the settings the calibration measures.
 
@@ -23,6 +24,7 @@ ENCODER_CRF_MAX=51
 VIDEO_EXT=hevc
 VIDEO_CODEC="hevc Main 10"
 DV_TARGET=8.1
+PRESETS_EXAMPLE="medium:16,17,18;slow:16,17,18"
 FARM_HDR="dovi_tool and hdr10plus_tool inject into the joined chunks"
 
 # Whether libx265 accepts preset $1, by a one-frame encode.
@@ -91,11 +93,14 @@ encoder_job_params() {
     declare -p COLOUR_FLAGS
 }
 
+# The output name gives the codec as HEVC, not an AVC or VC-1 source's.
+rename_stem() { sed -E 's/\[(AVC|VC-1)\]/[HEVC]/g; s/\[(h264|x264)\]/[h265]/g' <<<"$1"; }
+
 # The options that put RPU (with Dolby Vision) into the stream, one per
 # line. HDR10+ goes in after the encode (encoder_stream_hdr): nixpkgs
 # builds x265 without HDR10_PLUS, and --dhdr10-info then only warns.
 encoder_hdr_args() {
-    [[ -z $DV_PROFILE ]] || printf '%s\n' --dolby-vision-profile 8.1 --dolby-vision-rpu "$RPU"
+    [[ -z $DV_PROFILE ]] || printf '%s\n' --dolby-vision-profile "$DV_TARGET" --dolby-vision-rpu "$RPU"
     return 0
 }
 
@@ -107,19 +112,15 @@ encoder_stream_hdr() {
     run mv -f "$VIDEO_STREAM.hdr10plus" "$VIDEO_STREAM"
 }
 
-# `encoder_chunk_hdr <slot> <k> <name>`: sets CHUNK_HDR_ARGS, chunk k's
-# HDR options. None: encoder_join_hdr adds the metadata to the joined
-# stream.
-encoder_chunk_hdr() { CHUNK_HDR_ARGS=(); }
-
 # The farm, once the chunks are joined: HDR10+ and the Dolby Vision RPU
 # into VIDEO_STREAM.
 encoder_join_hdr() {
     encoder_stream_hdr
     if [[ -n ${DV_PROFILE:-} ]]; then
         progress "Putting the Dolby Vision RPU in…"
-        dovi_tool inject-rpu -i "$VIDEO_STREAM" --rpu-in "$RPU" -o "$VIDEO_STREAM.dv" >/dev/null &&
-            mv -f "$VIDEO_STREAM.dv" "$VIDEO_STREAM"
+        dovi_tool inject-rpu -i "$VIDEO_STREAM" --rpu-in "$RPU" -o "$VIDEO_STREAM.dv" >/dev/null ||
+            die "dovi_tool could not put the RPU in the joined chunks"
+        mv -f "$VIDEO_STREAM.dv" "$VIDEO_STREAM"
     fi
     progress ""
 }

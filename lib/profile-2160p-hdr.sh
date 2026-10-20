@@ -1,8 +1,8 @@
 # The 2160p HDR profile: UHD Blu-ray remux (HDR10, optionally Dolby Vision
 # and HDR10+) to HEVC Main10 HDR10, plus Dolby Vision 8.1 and HDR10+ when
 # the source has them, within Level 5.1 High tier.
-# Sourced by hevc-2160p-hdr.sh after the other lib/ files; each function
-# is one section's profile-specific part.
+# Sourced by hevc-2160p-hdr.sh and farm.sh after the other lib/ files;
+# each function is one section's profile-specific part.
 
 # shellcheck source=/dev/null
 source "$LIB/encoder-x265.sh"
@@ -18,8 +18,8 @@ profile_defaults() {
     VMAF_TARGET_LOW=${VMAF_TARGET_LOW:-94}
     QCOMP=${QCOMP:-0.7}
 
-    # full_ref CAMBI scores only banding the encode adds over the source; eotf=pq
-    # judges visibility on the PQ curve instead of BT.1886.
+    # full_ref CAMBI scores only banding the encode adds over the source;
+    # eotf=pq judges visibility on the PQ curve instead of BT.1886.
     VMAF_OPTIONS="model=version=vmaf_4k_v0.6.1neg:feature='name=cambi\:full_ref=true\:eotf=pq'"
     return 0
 }
@@ -178,7 +178,7 @@ profile_settings() {
     COLOUR_FLAGS=(-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv -chroma_sample_location "${V_CHROMALOC:-topleft}")
     hdr_tags
 
-    heading "Video  ${DIM}#$V → HEVC Main10 HDR10${DV_PROFILE:+ + Dolby Vision 8.1}${HAS_HDR10PLUS:+ + HDR10+}${RESET}"
+    heading "Video  ${DIM}#$V → HEVC Main10 HDR10${DV_PROFILE:+ + Dolby Vision $DV_TARGET}${HAS_HDR10PLUS:+ + HDR10+}${RESET}"
     item "libx265 · preset and CRF picked in section 3 · yuv420p10le"
     setting "Level / VBV" "$LEVEL"
     setting "Colour" "$COLOUR"
@@ -193,7 +193,7 @@ profile_settings() {
         setting "Crop" "$CROP"
     fi
     if [[ -n $DV_PROFILE ]]; then
-        item "Dolby Vision profile $DV_PROFILE → 8.1 (BL = HDR10, compatibility ID 1)"
+        item "Dolby Vision profile $DV_PROFILE → $DV_TARGET (BL = HDR10, compatibility ID 1)"
         setting "RPU" "${DOVI_EXTRACT[*]}"
         setting "Mux" "mkvmerge (writes the Dolby Vision configuration)"
     fi
@@ -216,9 +216,9 @@ profile_settings() {
 # Sets DOVI_EXTRACT, the RPU's extraction (needs CROP), and EXTRA_TAGS
 # for the HDR formats carried over.
 hdr_tags() {
-    # Dolby Vision: the source RPU, converted to profile 8.1, which AV1's 10.1
-    # shares (-m 2 removes the dual-layer mapping), and after a crop with
-    # zeroed letterbox offsets (L5).
+    # Dolby Vision: the source RPU, converted to profile 8.1 (-m 2 removes the
+    # dual-layer mapping) and, after a crop, with zeroed letterbox offsets
+    # (L5).
     DOVI_EXTRACT=(dovi_tool -m 2 ${CROP:+--crop} extract-rpu)
     EXTRA_TAGS=(
         "HDR_FORMAT=${DV_PROFILE:+Dolby Vision $DV_TARGET + }${HAS_HDR10PLUS:+HDR10+ + }HDR10"
@@ -371,6 +371,7 @@ profile_checks() {
         check "HDR10+ metadata" "yes" "$(jq -r 'if any(.frames[0].side_data_list[]?; .side_data_type | test("2094-40")) then "yes" else "no" end' <<<"$FIRST_FRAME")"
     fi
     if [[ -n $DV_PROFILE ]]; then
+        check "Dolby Vision RPU" "yes" "$(jq -r 'if any(.frames[0].side_data_list[]?; .side_data_type == "Dolby Vision Metadata") then "yes" else "no" end' <<<"$FIRST_FRAME")"
         check "Dolby Vision" "${DV_TARGET/./ }" "$(out_probe '[.streams[0].side_data_list[]? | select(.side_data_type == "DOVI configuration record")][0] | "\(.dv_profile) \(.dv_bl_signal_compatibility_id)"')"
     fi
     return 0

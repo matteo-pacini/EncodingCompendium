@@ -1,7 +1,7 @@
 # Section 4 in parts: the video as a raw stream from the profile's encoder
 # (lib/encoder-*.sh) and the stereo track as a file of its own, then one
 # mkvmerge mux with the source's audio, subtitles, chapters and
-# attachments. Every entry script encodes this way (hevc-farm.sh with the
+# attachments. Every entry script encodes this way (farm.sh with the
 # video in chunks). Sourced before the profile.
 
 # After prepare_output: sets PARTS, the intermediates' directory beside the

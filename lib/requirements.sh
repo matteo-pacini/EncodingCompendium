@@ -142,7 +142,7 @@ require_qcomp() {
 require_presets() {
     local problem i summary="" rejected=()
     if ! problem=$(parse_presets); then
-        requirement "PRESETS" no "$problem — e.g. PRESETS=\"medium:16,17,18;slow:16,17,18\""
+        requirement "PRESETS" no "$problem — e.g. PRESETS=\"$PRESETS_EXAMPLE\""
         return
     fi
     parse_presets
