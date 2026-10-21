@@ -38,6 +38,7 @@ A worker needs an SSH alias with key login, and Nix. It fetches its tools from t
 - The master joins the chunks and adds Dolby Vision and HDR10+.
 - A failed chunk is retried, and an unreachable host's chunks go to the other hosts.
 - `--no-local` leaves the master out of the encoding. With no `--worker`, the master encodes alone.
+- Ctrl+C while the samples or chunks run is a safe shutdown: no new job starts, and the running ones finish, are scored and come home before the run ends. A second Ctrl+C aborts at once, discarding the unfinished ones.
 - `--stop-at 07:00` starts no chunk that would end later, and stops there. Returned chunks are recorded in a `.chunks` file, so running the same command again carries on. The Dolby Vision RPU and HDR10+ metadata are kept too, and reused when their SHA-256 still matches.
 - The whole film is always scored.
 

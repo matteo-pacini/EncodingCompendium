@@ -26,6 +26,8 @@
 # output, the worst sample, the .analysis, and <output stem>.chunks, the
 # chunk plan and every chunk returned and checked. A run cut short keeps
 # its chunks in <output stem>.partial, and the same command picks them up.
+# Ctrl+C while jobs run lets the running ones finish and come home first
+# (status 75); a second Ctrl+C aborts at once.
 #
 # Every host gets one slot per NUMA node. Workers need SSH keys and Nix:
 # their tools come from this repository's flake on GitHub, at FARM_REF

@@ -138,13 +138,43 @@ farm_stop() {
     exit 75
 }
 
+# Ctrl+C in farm_schedule: the first is a safe shutdown, no job starting
+# and the running ones let finish and come home (farm_soft_stop ends the
+# run then); a second aborts at once, as Ctrl+C does elsewhere.
+farm_interrupt() {
+    if [[ -n $FARM_SOFT ]]; then
+        farm_event "$RED✖ Aborted: jobs still running are discarded$RESET"
+        exit 130
+    fi
+    FARM_SOFT=1
+    farm_event "$YELLOW▲ Safe shutdown: the running jobs finish and come home, no new one starts · Ctrl+C again to abort$RESET"
+}
+
+# Ends the run once farm_interrupt's running jobs are home; farm_schedule's
+# pending list is in scope, being the caller.
+farm_soft_stop() {
+    farm_draw
+    farm_event "$YELLOW▲$RESET Safe shutdown done: ${#pending[@]} job(s) not started · what finished is kept: run the same command again to go on"
+    exit 75
+}
+
 # Runs every job in FARM_QUEUE to success. A slot with nothing left in it
 # takes a job from FARM_EXTRA, work ahead that may be wanted later, until
 # FARM_QUEUE's last job is done; extras then running are let finish.
 # FARM_TOTAL names the function printing the total line; FARM_DONE and
-# FARM_AHEAD count the finished jobs of each queue.
+# FARM_AHEAD count the finished jobs of each queue. Ctrl+C goes to
+# farm_interrupt.
 farm_schedule() {
     local i id rc pending=("${FARM_QUEUE[@]}") extra=("${FARM_EXTRA[@]}") busy needed alive key err
+    FARM_SOFT=""
+    # Ctrl+C read as a key, not sent as SIGINT: the signal would reach every
+    # process in the terminal's foreground group, local jobs and whatever
+    # this loop runs at the time included. A read returns after a key or
+    # 1 s (min 0 time 10). Not bash's read -n: it turns signals back on.
+    if [[ -t 0 ]]; then
+        FARM_STTY=$(stty -g)
+        stty -isig -icanon -echo min 0 time 10
+    fi
     declare -gA FARM_TRIES=() FARM_IS_EXTRA=()
     declare -ga SLOT_JOB=() SLOT_START=() SLOT_FR=() SLOT_SEC=()
     FARM_DONE=0 FARM_AHEAD=0 FARM_DRAWN=0
@@ -188,7 +218,7 @@ farm_schedule() {
         for i in "${!SLOT_HOST[@]}"; do
             [[ -n ${SLOT_DOWN[i]:-} ]] && continue
             alive=1
-            [[ -z ${SLOT_JOB[i]:-} ]] || continue
+            [[ -z ${SLOT_JOB[i]:-} && -z $FARM_SOFT ]] || continue
             if (( ${#pending[@]} > 0 )); then
                 FARM_PENDING=("${pending[@]}")
                 farm_defer "$i" "${pending[0]}" && continue
@@ -217,11 +247,18 @@ farm_schedule() {
         for i in "${!SLOT_HOST[@]}"; do [[ -n ${SLOT_JOB[i]:-} ]] && busy=1; done
         # Idle with jobs queued: only farm_fits holds jobs back from every slot.
         [[ -n ${STOP_AT:-} ]] && (( EPOCHSECONDS >= STOP_AT || (!busy && ${#pending[@]} > 0) )) && farm_stop
+        [[ -n $FARM_SOFT ]] && (( !busy )) && farm_soft_stop
         (( busy || ${#pending[@]} > 0 )) || break
         farm_draw
-        sleep 1
+        if [[ -n ${FARM_STTY:-} ]]; then
+            if [[ $(head -c 1 | od -An -tx1) == " 03" ]]; then farm_interrupt; fi
+        else
+            sleep 1
+        fi
     done
     farm_draw
+    [[ -z ${FARM_STTY:-} ]] || stty "$FARM_STTY"
+    FARM_STTY=""
     return 0
 }
 

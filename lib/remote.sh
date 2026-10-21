@@ -261,10 +261,13 @@ require_workers() {
     return 0
 }
 
-# Run by cleanup: jobs still running on workers die with their ssh (the
-# watchdog), then every worker's scratch directory goes.
+# Run by cleanup: the terminal's settings back, jobs still running on
+# workers die with their ssh (the watchdog), then every worker's scratch
+# directory goes.
 cleanup_hook() {
     local host
+    # The terminal as farm_schedule found it.
+    [[ -z ${FARM_STTY:-} ]] || stty "$FARM_STTY"
     for host in "${WORKERS[@]}"; do
         timeout 30 ssh "${SSH_OPTS[@]}" "$host" "sleep 3; rm -rf $FARM_RDIR" >/dev/null 2>&1 &
     done
