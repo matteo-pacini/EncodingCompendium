@@ -188,6 +188,8 @@ setup_workdir() {
 }
 
 cleanup() {
+    # Out of the job table, or bash reports each job killed below as Killed.
+    disown -a
     kill_tree $$
     # A script with work elsewhere (farm.sh's workers) cleans it up here.
     if declare -F cleanup_hook >/dev/null; then cleanup_hook; fi
